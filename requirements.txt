@@ -1,5 +1,5 @@
 numpy
-tensorflow==2.3.1
+tensorflow[and-cuda]
 ete3
 pandas
 biopython

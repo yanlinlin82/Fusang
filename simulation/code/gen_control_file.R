@@ -3,6 +3,19 @@
 ### ARGUMENTS: N taxa N_sims Aln_length
 
 args = commandArgs(trailingOnly=TRUE)
+if (length(args) != 9) {
+  stop("Usage: Rscript gen_control_file.R n_taxa n_sim aln_length_upper_bound aln_length_lower_bound indel_substitution_rate_lower_bound indel_substitution_rate_upper_bound max_indel_length in.newick.csv out.control.txt")
+}
+n_taxa = as.numeric(args[1])
+n_sim = as.numeric(args[2])
+aln_length_upper_bound = as.numeric(args[3])
+aln_length_lower_bound = as.numeric(args[4])
+indel_substitution_rate_lower_bound = as.numeric(args[5])
+indel_substitution_rate_upper_bound = as.numeric(args[6])
+max_indel_length = as.numeric(args[7])
+in_newick = args[8]
+out_control = args[9]
+
 library('phangorn')
 library('MCMCpack')
 library('dplyr')
@@ -53,31 +66,31 @@ model_gen=function(modelset,file,max_indel_length,indel_substitution_rate_lower_
   return(models_selected)
 }
 
-indelib_gen=function(n_taxa,n_sim,aln_length_upper_bound,aln_length_lower_bound,indel_substitution_rate_lower_bound,indel_substitution_rate_upper_bound,max_indel_length) # n_sim = number of simulations per topology
+indelib_gen=function(n_taxa,n_sim,aln_length_upper_bound,aln_length_lower_bound,indel_substitution_rate_lower_bound,indel_substitution_rate_upper_bound,max_indel_length,in_newick,out_control) # n_sim = number of simulations per topology
 {
   
-  write(paste('[TYPE] NUCLEOTIDE 2\n[SETTINGS]\n [output] FASTA\n [randomseed] ',round(runif(1,1,100000))),'control.txt')
+  write(paste('[TYPE] NUCLEOTIDE 2\n[SETTINGS]\n [output] FASTA\n [randomseed] ',round(runif(1,1,100000))),out_control)
   n_datasets=n_sim
   
   #Set MODEL block
   modelset=sample(c('JC','TIM','TIMef','GTR','UNREST'),n_datasets,replace=T)
-  MODEL=model_gen(modelset,'control.txt',max_indel_length,indel_substitution_rate_lower_bound,indel_substitution_rate_upper_bound)
+  MODEL=model_gen(modelset,out_control,max_indel_length,indel_substitution_rate_lower_bound,indel_substitution_rate_upper_bound)
   
   #Set TREE block
   ID_TREE=paste(rep("t_sim",times=n_datasets),1:n_datasets,sep="")
   print("Newick")
-  NEWICK=read.csv('../label_file/newick.csv',header=TRUE)
+  NEWICK=read.csv(in_newick,header=TRUE)
   NEWICK=NEWICK[,2]
   print("Done newick")
-  write.table(data.frame('[TREE]',ID_TREE,NEWICK),'control.txt',append=T,quote=F,row.names=F,col.names =F)
+  write.table(data.frame('[TREE]',ID_TREE,NEWICK),out_control,append=T,quote=F,row.names=F,col.names =F)
   
   #Set PARTITIONS block
   PNAME=paste("p",1:n_datasets,sep="")
-  write.table(data.frame('[PARTITIONS]',PNAME,"[",ID_TREE,MODEL,round(runif(n_sim,aln_length_lower_bound,aln_length_upper_bound)),"]"),'control.txt',append=T,quote=F,row.names=F,col.names =F)
+  write.table(data.frame('[PARTITIONS]',PNAME,"[",ID_TREE,MODEL,round(runif(n_sim,aln_length_lower_bound,aln_length_upper_bound)),"]"),out_control,append=T,quote=F,row.names=F,col.names =F)
   
   #Set EVOLVE block
-  write('[EVOLVE]','control.txt',append=T)
-  write.table(data.frame(PNAME,1,apply(data.frame(ID_TREE),1,paste,collapse="")),'control.txt',append=T,quote=F,row.names=F,col.names =F)
+  write('[EVOLVE]',out_control,append=T)
+  write.table(data.frame(PNAME,1,apply(data.frame(ID_TREE),1,paste,collapse="")),out_control,append=T,quote=F,row.names=F,col.names =F)
 }
 
-indelib_gen(as.numeric(args[1]),as.numeric(args[2]),as.numeric(args[3]), as.numeric(args[4]), as.numeric(args[5]), as.numeric(args[6]), as.numeric(args[7]))
+indelib_gen(n_taxa,n_sim,aln_length_upper_bound,aln_length_lower_bound,indel_substitution_rate_lower_bound,indel_substitution_rate_upper_bound,max_indel_length,in_newick,out_control)

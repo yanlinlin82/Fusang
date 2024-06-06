@@ -1,25 +1,32 @@
 import os
 import re
+import argparse
 import numpy as np
 import random
 import pandas as pd
 import ete3
 from ete3 import Tree
 
-folder_fasta = '../fasta_file/'
-folder_numpy = '../numpy_file/'
+parser = argparse.ArgumentParser('filter output msa length')
+p_input = parser.add_argument_group("INPUT")
+p_input.add_argument("--in_trees_txt", action="store", type=str, required=True)
+p_input.add_argument("--in_fasta_dir", action="store", type=str, required=True)
+p_input.add_argument("--out_dir", action="store", type=str, required=True)
 
-if not os.path.exists(folder_numpy):
-    os.mkdir(folder_numpy)
+args = parser.parse_args()
+in_trees_txt = args.in_trees_txt
+in_fasta_dir = args.in_fasta_dir
+out_dir = args.out_dir
 
-folder_numpy_seq = folder_numpy + 'seq/'
-folder_numpy_label = folder_numpy + 'label/'
+
+folder_numpy_seq = out_dir + 'seq/'
+folder_numpy_label = out_dir + 'label/'
 if not os.path.exists(folder_numpy_seq):
     os.mkdir(folder_numpy_seq)
 if not os.path.exists(folder_numpy_label):
     os.mkdir(folder_numpy_label)
 
-csv_data = pd.read_table("../label_file/trees.txt", skiprows=5,sep='\t',header=None)
+csv_data = pd.read_table(in_trees_txt, skiprows=5, sep='\t', header=None)
 file = list(csv_data[0])
 topo = list(csv_data[8])
 dic = {}
@@ -69,7 +76,7 @@ def get_numpy(folder_dir, fasta_dir):
 
     return np.array(matrix_out)
 
-file_list = os.listdir(folder_fasta)
+file_list = os.listdir(in_fasta_dir)
 random.shuffle(file_list)
 cnt = 0
 
@@ -79,7 +86,7 @@ for ele in file_list:
     tmp_file = ele.split('.')[0][:-5]
     current_label = dic[tmp_file] 
     current_label = np.array(assign_label(current_label))
-    current_seq = get_numpy(folder_fasta, ele)
+    current_seq = get_numpy(in_fasta_dir, ele)
     seq_dir = folder_numpy_seq + ele.split('_TRUE')[0].split('sim')[1] + '.npy'
     label_dir = folder_numpy_label + ele.split('_TRUE')[0].split('sim')[1] + '.npy'
     np.save(seq_dir, current_seq)

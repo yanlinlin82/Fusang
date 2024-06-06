@@ -136,36 +136,30 @@ p_input = parser.add_argument_group("INPUT")
 p_input.add_argument("--num_of_topology", action="store", type=int, required=True)
 p_input.add_argument("--taxa_num", action="store", type=int, required=True)
 p_input.add_argument("--range_of_taxa_num", action="store", type=str, required=True)
-p_input.add_argument("--len_of_msa_upper_bound", action="store", type=int, required=True)
-p_input.add_argument("--len_of_msa_lower_bound", action="store", type=int, required=True)
 p_input.add_argument("--num_of_process", action="store", type=int, required=True)
 p_input.add_argument("--distribution_of_internal_branch_length", action="store", type=str, required=True)
 p_input.add_argument("--distribution_of_external_branch_length", action="store", type=str, required=True)
 p_input.add_argument("--range_of_mean_pairwise_divergence", action="store", type=str, required=True)
-p_input.add_argument("--range_of_indel_substitution_rate", action="store", type=str, required=True)
 p_input.add_argument("--max_indel_length", action="store", type=int, required=True)
+p_input.add_argument("--output_newick", action="store", type=str, required=True)
 
 
 args = parser.parse_args()
 num_of_topology = args.num_of_topology
 taxa_num = args.taxa_num
 range_of_taxa_num = list(eval(args.range_of_taxa_num))
-len_of_msa_upper_bound = args.len_of_msa_upper_bound
-len_of_msa_lower_bound = args.len_of_msa_lower_bound
 num_of_process = args.num_of_process
 distribution_of_internal_branch_length = list(eval(args.distribution_of_internal_branch_length))
-
 distribution_of_external_branch_length = list(eval(args.distribution_of_external_branch_length))
 range_of_mean_pairwise_divergence = list(eval(args.range_of_mean_pairwise_divergence))
-range_of_indel_substitution_rate = list(eval(args.range_of_indel_substitution_rate))
 max_indel_length = args.max_indel_length
+output_newick = args.output_newick
 
 
 q = multiprocessing.Manager().Queue()
 
 #q, range_of_taxa_num, distribution_of_internal_branch_length, 
 #distribution_of_external_branch_length, range_of_mean_pairwise_divergence
-
 
 
 para_list = [(q, taxa_num, range_of_taxa_num, distribution_of_internal_branch_length,
@@ -185,21 +179,7 @@ print(len(csv_list))
 #     ans = gen_newick()
 #     csv_list.append(ans)
 
-folder_label = '../label_file/'
-if not os.path.exists(folder_label):
-    os.mkdir(folder_label)
 
-if not os.path.exists('../simulate_data'):
-    os.mkdir('../simulate_data')
-
-#subprocess.call('cp ../indelible ../simulate_data/indelible',shell=True)
 dictionary = {"newick" : csv_list}
 data=DataFrame(dictionary)
-newick_dir = folder_label + 'newick.csv'
-data.to_csv(newick_dir)
-tmp_cmd = 'Rscript ./gen_control_file.R {} '.format(taxa_num) + str(num_of_topology) +' ' + str(len_of_msa_upper_bound) \
-    +' ' + str(len_of_msa_lower_bound) +' ' + str(range_of_indel_substitution_rate[0]) + ' ' + str(range_of_indel_substitution_rate[1]) \
-    +' ' + str(max_indel_length)
-print(tmp_cmd)
-retcode = subprocess.call(tmp_cmd,shell=True)
-retcode2 = subprocess.call("mv ./control.txt ../simulate_data/control.txt",shell=True)
+data.to_csv(output_newick)

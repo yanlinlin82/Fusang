@@ -23,19 +23,19 @@ args = parser.parse_args()
 length = args.length
 
 def get_msa_length(msa_dir):
-	alignment = AlignIO.read(open(msa_dir), 'fasta')
-	len_of_msa = len(alignment[0].seq)
-	return len_of_msa
+    alignment = AlignIO.read(open(msa_dir), 'fasta')
+    len_of_msa = len(alignment[0].seq)
+    return len_of_msa
 
 def extract(ele):
-	if('.fas' in ele and 'TRUE' in ele):
-		file = folder + ele
-		msa_length = get_msa_length(file)
-		if msa_length > length:
-			file_fasta = folder_fasta + 'fail/' + ele
-		else:
-			file_fasta = folder_fasta + ele
-		shutil.copy(file, file_fasta)
+    if('.fas' in ele and 'TRUE' in ele):
+        file = folder + ele
+        msa_length = get_msa_length(file)
+        if msa_length > length:
+            file_fasta = folder_fasta + 'fail/' + ele
+        else:
+            file_fasta = folder_fasta + ele
+        shutil.copy(file, file_fasta)
 
 para_list = os.listdir('../simulate_data/')
 pool = Pool(8)

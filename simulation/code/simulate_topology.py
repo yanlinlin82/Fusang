@@ -53,7 +53,7 @@ def _find_lba_branches(tree):
 
 
 def gen_newick(q, taxa_num, range_of_taxa_num, distribution_of_internal_branch_length, 
-	distribution_of_external_branch_length, range_of_mean_pairwise_divergence):
+    distribution_of_external_branch_length, range_of_mean_pairwise_divergence):
     taxon_count_model=scipy.stats.uniform(range_of_taxa_num[0], range_of_taxa_num[1])
     tree = ete3.PhyloTree()
     tree.populate(int(taxon_count_model.rvs()), random_branches=True)
@@ -61,14 +61,14 @@ def gen_newick(q, taxa_num, range_of_taxa_num, distribution_of_internal_branch_l
     current_leaf_index = 0
 
     if distribution_of_internal_branch_length[0] == 1:
-    	internal_branch_model = scipy.stats.gamma(a=distribution_of_internal_branch_length[1], scale=distribution_of_internal_branch_length[2])
+        internal_branch_model = scipy.stats.gamma(a=distribution_of_internal_branch_length[1], scale=distribution_of_internal_branch_length[2])
     elif distribution_of_internal_branch_length[0] == 0:
-    	internal_branch_model = scipy.stats.uniform(distribution_of_internal_branch_length[1], distribution_of_internal_branch_length[2])
+        internal_branch_model = scipy.stats.uniform(distribution_of_internal_branch_length[1], distribution_of_internal_branch_length[2])
 
     if distribution_of_external_branch_length[0] == 1:
-    	external_branch_model = scipy.stats.gamma(a=distribution_of_external_branch_length[1], scale=distribution_of_external_branch_length[2])
+        external_branch_model = scipy.stats.gamma(a=distribution_of_external_branch_length[1], scale=distribution_of_external_branch_length[2])
     elif distribution_of_external_branch_length[0] == 0:
-    	external_branch_model = scipy.stats.uniform(distribution_of_external_branch_length[1], distribution_of_external_branch_length[2])
+        external_branch_model = scipy.stats.uniform(distribution_of_external_branch_length[1], distribution_of_external_branch_length[2])
 
     expected_mean_pairwise_divergence = scipy.stats.uniform(range_of_mean_pairwise_divergence[0], range_of_mean_pairwise_divergence[1]).rvs()
 
@@ -101,9 +101,9 @@ def gen_newick(q, taxa_num, range_of_taxa_num, distribution_of_internal_branch_l
         node.dist = format(node.dist, '.4f')
 
     if range_of_taxa_num[0] == range_of_taxa_num[1] == 4:
-    	lba_ratio = 0.15
+        lba_ratio = 0.15
     else:
-    	lba_ratio = -1
+        lba_ratio = -1
 
     if random.random() < lba_ratio:
         __, leaves = _find_lba_branches(tree)
@@ -169,7 +169,7 @@ q = multiprocessing.Manager().Queue()
 
 
 para_list = [(q, taxa_num, range_of_taxa_num, distribution_of_internal_branch_length,
-	distribution_of_external_branch_length, range_of_mean_pairwise_divergence) for i in range(0, num_of_topology)]
+    distribution_of_external_branch_length, range_of_mean_pairwise_divergence) for i in range(0, num_of_topology)]
 pool = Pool(num_of_process)
 pool.starmap(gen_newick, para_list)
 pool.close()
@@ -198,8 +198,8 @@ data=DataFrame(dictionary)
 newick_dir = folder_label + 'newick.csv'
 data.to_csv(newick_dir)
 tmp_cmd = 'Rscript ./gen_control_file.R {} '.format(taxa_num) + str(num_of_topology) +' ' + str(len_of_msa_upper_bound) \
-	+' ' + str(len_of_msa_lower_bound) +' ' + str(range_of_indel_substitution_rate[0]) + ' ' + str(range_of_indel_substitution_rate[1]) \
-	+' ' + str(max_indel_length)
+    +' ' + str(len_of_msa_lower_bound) +' ' + str(range_of_indel_substitution_rate[0]) + ' ' + str(range_of_indel_substitution_rate[1]) \
+    +' ' + str(max_indel_length)
 print(tmp_cmd)
 retcode = subprocess.call(tmp_cmd,shell=True)
 retcode2 = subprocess.call("mv ./control.txt ../simulate_data/control.txt",shell=True)

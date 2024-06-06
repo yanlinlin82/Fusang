@@ -38,6 +38,8 @@ def assign_label(str):
         return 1
     elif t1.robinson_foulds(label_2, unrooted_trees=True)[0] == 0:
         return 2
+    else:
+        raise Exception("A fatal error occurred.")
 
 def get_numpy(folder_dir, fasta_dir):
     aln_file = folder_dir + fasta_dir
@@ -82,5 +84,5 @@ for ele in file_list:
     label_dir = folder_numpy_label + ele.split('_TRUE')[0].split('sim')[1] + '.npy'
     np.save(seq_dir, current_seq)
     np.save(label_dir, current_label)
-    print(current_label.shape, current_seq.shape)
+    print(current_label, ' - ', current_seq.shape)
     #cnt += 1

@@ -192,7 +192,7 @@ if not os.path.exists(folder_label):
 if not os.path.exists('../simulate_data'):
     os.mkdir('../simulate_data')
 
-subprocess.call('cp ../indelible ../simulate_data/indelible',shell=True)
+#subprocess.call('cp ../indelible ../simulate_data/indelible',shell=True)
 dictionary = {"newick" : csv_list}
 data=DataFrame(dictionary)
 newick_dir = folder_label + 'newick.csv'

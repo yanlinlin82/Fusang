@@ -3,18 +3,21 @@
 ### ARGUMENTS: N taxa N_sims Aln_length
 
 args = commandArgs(trailingOnly=TRUE)
-if (length(args) != 9) {
-  stop("Usage: Rscript gen_control_file.R n_taxa n_sim len_of_msa_lower_bound len_of_msa_upper_bound indel_substitution_rate_lower_bound indel_substitution_rate_upper_bound max_indel_length in.newick.csv out.control.txt")
+if (length(args) != 10) {
+  stop("Usage: Rscript gen_control_file.R seed n_taxa n_sim len_of_msa_lower_bound len_of_msa_upper_bound indel_substitution_rate_lower_bound indel_substitution_rate_upper_bound max_indel_length in.newick.csv out.control.txt")
 }
-n_taxa = as.numeric(args[1])
-n_sim = as.numeric(args[2])
-len_of_msa_lower_bound = as.numeric(args[3])
-len_of_msa_upper_bound = as.numeric(args[4])
-indel_substitution_rate_lower_bound = as.numeric(args[5])
-indel_substitution_rate_upper_bound = as.numeric(args[6])
-max_indel_length = as.numeric(args[7])
-in_newick = args[8]
-out_control = args[9]
+seed = as.numeric(args[1])
+n_taxa = as.numeric(args[2])
+n_sim = as.numeric(args[3])
+len_of_msa_lower_bound = as.numeric(args[4])
+len_of_msa_upper_bound = as.numeric(args[5])
+indel_substitution_rate_lower_bound = as.numeric(args[6])
+indel_substitution_rate_upper_bound = as.numeric(args[7])
+max_indel_length = as.numeric(args[8])
+in_newick = args[9]
+out_control = args[10]
+
+set.seed(seed)
 
 library('phangorn')
 library('MCMCpack')

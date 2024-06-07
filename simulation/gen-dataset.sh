@@ -1,8 +1,9 @@
 #!/bin/bash
 
-if [ -z "${13}" ]; then
+if [ -z "${14}" ]; then
     echo
-    echo "Usage: $0 <out-dir> <num_of_topology> <taxa_num> <range_of_taxa_num> \\"
+    echo "Usage: $0 <out-dir> <seed> \\"
+    echo "          <num_of_topology> <taxa_num> <range_of_taxa_num> \\"
     echo "          <len_of_msa_lower_bound> <len_of_msa_upper_bound> <num_of_process> \\"
     echo "          <distribution_of_internal_branch_length> <distribution_of_external_branch_length> \\"
     echo "          <range_of_mean_pairwise_divergence> \\"
@@ -20,18 +21,19 @@ if [ -z "${13}" ]; then
 fi
 
 out_dir="${1}"
-num_of_topology="${2}"
-taxa_num="${3}"
-range_of_taxa_num="${4}"
-len_of_msa_lower_bound="${5}"
-len_of_msa_upper_bound="${6}"
-num_of_process="${7}"
-distribution_of_internal_branch_length="${8}"
-distribution_of_external_branch_length="${9}"
-range_of_mean_pairwise_divergence="${10}"
-indel_substitution_rate_lower_bound="${11}"
-indel_substitution_rate_upper_bound="${12}"
-max_indel_length="${13}"
+seed="${2}"
+num_of_topology="${3}"
+taxa_num="${4}"
+range_of_taxa_num="${5}"
+len_of_msa_lower_bound="${6}"
+len_of_msa_upper_bound="${7}"
+num_of_process="${8}"
+distribution_of_internal_branch_length="${9}"
+distribution_of_external_branch_length="${10}"
+range_of_mean_pairwise_divergence="${11}"
+indel_substitution_rate_lower_bound="${12}"
+indel_substitution_rate_upper_bound="${13}"
+max_indel_length="${14}"
 
 if [ -e "${out_dir}" ]; then
     echo "Error: Output directory already exists."
@@ -41,6 +43,7 @@ fi
 mkdir -pv "${out_dir}"/{simulate_data,label_file,fasta_data,numpy_data}/
 
 time python code/simulate_topology.py \
+    --seed ${seed} \
     --num_of_topology ${num_of_topology} \
     --taxa_num ${taxa_num} \
     --range_of_taxa_num "${range_of_taxa_num}" \
@@ -52,7 +55,7 @@ time python code/simulate_topology.py \
     --output_newick ${out_dir}/label_file/newick.csv
 
 time Rscript code/gen_control_file.R \
-    ${taxa_num} ${num_of_topology} ${len_of_msa_lower_bound} ${len_of_msa_upper_bound} \
+    ${seed} ${taxa_num} ${num_of_topology} ${len_of_msa_lower_bound} ${len_of_msa_upper_bound} \
     ${indel_substitution_rate_lower_bound} ${indel_substitution_rate_upper_bound} \
     ${max_indel_length} ${out_dir}/label_file/newick.csv ${out_dir}/simulate_data/control.txt
 
@@ -76,4 +79,4 @@ time python code/gen_numpy.py \
     --in_fasta_dir ${out_dir}/fasta_data/ \
     --out_dir ${out_dir}/numpy_data/
 
-rm -rf ${out_dir}/simulate_data/
+#rm -rf ${out_dir}/simulate_data/

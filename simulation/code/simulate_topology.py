@@ -50,8 +50,12 @@ def _find_lba_branches(tree):
     return min_branch_ratio, leaves
 
 
-def gen_newick(q, taxa_num, range_of_taxa_num, distribution_of_internal_branch_length, 
+def gen_newick(q, seed, taxa_num, range_of_taxa_num, distribution_of_internal_branch_length, 
     distribution_of_external_branch_length, range_of_mean_pairwise_divergence):
+
+    random.seed(seed)
+    np.random.seed(seed)
+
     taxon_count_model=scipy.stats.uniform(range_of_taxa_num[0], range_of_taxa_num[1])
     tree = ete3.PhyloTree()
     tree.populate(int(taxon_count_model.rvs()), random_branches=True)
@@ -131,6 +135,7 @@ def gen_newick(q, taxa_num, range_of_taxa_num, distribution_of_internal_branch_l
 
 parser = argparse.ArgumentParser('get_parameters_of_simulation')
 p_input = parser.add_argument_group("INPUT")
+p_input.add_argument("--seed", action="store", type=int, required=True)
 p_input.add_argument("--num_of_topology", action="store", type=int, required=True)
 p_input.add_argument("--taxa_num", action="store", type=int, required=True)
 p_input.add_argument("--range_of_taxa_num", action="store", type=str, required=True)
@@ -143,6 +148,7 @@ p_input.add_argument("--output_newick", action="store", type=str, required=True)
 
 
 args = parser.parse_args()
+seed = args.seed
 num_of_topology = args.num_of_topology
 taxa_num = args.taxa_num
 range_of_taxa_num = list(eval(args.range_of_taxa_num))
@@ -160,7 +166,7 @@ q = multiprocessing.Manager().Queue()
 #distribution_of_external_branch_length, range_of_mean_pairwise_divergence
 
 
-para_list = [(q, taxa_num, range_of_taxa_num, distribution_of_internal_branch_length,
+para_list = [(q, seed + i, taxa_num, range_of_taxa_num, distribution_of_internal_branch_length,
     distribution_of_external_branch_length, range_of_mean_pairwise_divergence) for i in range(0, num_of_topology)]
 pool = Pool(num_of_process)
 pool.starmap(gen_newick, para_list)
@@ -172,11 +178,8 @@ while not q.empty():
     tmp_topo = q.get()
     csv_list.append(tmp_topo)
 
+csv_list.sort() # keep the same order for reproducibility
 print(len(csv_list))
-# for i in range(0, num_of_topology):
-#     ans = gen_newick()
-#     csv_list.append(ans)
-
 
 dictionary = {"newick" : csv_list}
 data=DataFrame(dictionary)

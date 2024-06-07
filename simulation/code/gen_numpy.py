@@ -1,10 +1,8 @@
 import os
-import re
 import argparse
 import numpy as np
 import random
 import pandas as pd
-import ete3
 from ete3 import Tree
 
 parser = argparse.ArgumentParser('filter output msa length')
@@ -78,7 +76,6 @@ def get_numpy(folder_dir, fasta_dir):
 
 file_list = os.listdir(in_fasta_dir)
 random.shuffle(file_list)
-cnt = 0
 
 for ele in file_list:
     if ele == 'fail':
@@ -91,5 +88,4 @@ for ele in file_list:
     label_dir = folder_numpy_label + ele.split('_TRUE')[0].split('sim')[1] + '.npy'
     np.save(seq_dir, current_seq)
     np.save(label_dir, current_label)
-    print(current_label, ' - ', current_seq.shape)
-    #cnt += 1
+    print(f'[{current_label}] {current_seq.shape}')

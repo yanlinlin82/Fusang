@@ -1,9 +1,7 @@
 import os
 import shutil
 import argparse
-from multiprocessing import Process, Pool
-import multiprocessing
-import subprocess
+from multiprocessing import Pool
 from Bio import AlignIO
 
 parser = argparse.ArgumentParser('filter output msa length')

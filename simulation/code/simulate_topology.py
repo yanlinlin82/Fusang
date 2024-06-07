@@ -2,12 +2,10 @@ import random
 import ete3
 import scipy.stats
 import re
-import subprocess
 import argparse
 from pandas.core.frame import DataFrame
-import os
 import numpy as np
-from multiprocessing import Process, Pool
+from multiprocessing import Pool
 import multiprocessing
 
 def _get_extremes(tree):    

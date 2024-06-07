@@ -3,14 +3,14 @@
 if [ -z "${13}" ]; then
     echo
     echo "Usage: $0 <out-dir> <num_of_topology> <taxa_num> <range_of_taxa_num> \\"
-    echo "          <len_of_msa_upper_bound> <len_of_msa_lower_bound> <num_of_process> \\"
+    echo "          <len_of_msa_lower_bound> <len_of_msa_upper_bound> <num_of_process> \\"
     echo "          <distribution_of_internal_branch_length> <distribution_of_external_branch_length> \\"
     echo "          <range_of_mean_pairwise_divergence> \\"
     echo "          <indel_substitution_rate_lower_bound> <indel_substitution_rate_upper_bound> \\"
     echo "          <max_indel_length>"
     echo
     echo "Example: $0 out/ 20 5 '[5, 40]' \\"
-    echo "            1200 240 24 \\"
+    echo "            240 1200 24 \\"
     echo "            '[1, 0.5, 0.3]' '[1, 0.5, 0.3]' \\"
     echo "            '[0.03, 0.3]' \\"
     echo "            0.01 0.25 \\"
@@ -23,8 +23,8 @@ out_dir="${1}"
 num_of_topology="${2}"
 taxa_num="${3}"
 range_of_taxa_num="${4}"
-len_of_msa_upper_bound="${5}"
-len_of_msa_lower_bound="${6}"
+len_of_msa_lower_bound="${5}"
+len_of_msa_upper_bound="${6}"
 num_of_process="${7}"
 distribution_of_internal_branch_length="${8}"
 distribution_of_external_branch_length="${9}"
@@ -52,7 +52,7 @@ time python code/simulate_topology.py \
     --output_newick ${out_dir}/label_file/newick.csv
 
 time Rscript code/gen_control_file.R \
-    ${taxa_num} ${num_of_topology} ${len_of_msa_upper_bound} ${len_of_msa_lower_bound} \
+    ${taxa_num} ${num_of_topology} ${len_of_msa_lower_bound} ${len_of_msa_upper_bound} \
     ${indel_substitution_rate_lower_bound} ${indel_substitution_rate_upper_bound} \
     ${max_indel_length} ${out_dir}/label_file/newick.csv ${out_dir}/simulate_data/control.txt
 
@@ -65,9 +65,9 @@ time Rscript code/gen_control_file.R \
 )
 
 time python code/extract_fasta_data.py \
-    --length 1200 \
     --in_dir ${out_dir}/simulate_data/ \
     --out_dir ${out_dir}/fasta_data/
+#    --length 1200 \
 
 cp -av ${out_dir}/simulate_data/trees.txt ${out_dir}/label_file/
 

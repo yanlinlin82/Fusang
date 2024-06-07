@@ -3,3 +3,6 @@ tensorflow[and-cuda]
 ete3
 pandas
 biopython
+notebook
+matplotlib
+scikit-learn

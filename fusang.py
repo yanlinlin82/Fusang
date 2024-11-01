@@ -111,7 +111,7 @@ def judge_tree_score(tree, quart_distribution, new_addition_taxa, dic_for_leave_
         quart_topo_distribution = quart_distribution[quart_topo_id]
         
         # judge current tree belongs to which topology
-        tmp = re.findall("\([\s\S]\,[\s\S]\)", crt_tree.write(format=9))[0]
+        tmp = re.findall(r"\([\s\S]\,[\s\S]\)", crt_tree.write(format=9))[0]
         topology_id = get_current_topology_id(quart_key, tmp[1], tmp[3])
         
         total_quart_score += np.log(quart_topo_distribution[topology_id]+1e-200)

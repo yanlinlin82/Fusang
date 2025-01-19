@@ -1,5 +1,7 @@
-# Fusang <img align="right" src="https://github.com/Jerry-0591/Fusang/blob/main/logo.jpg" width="170" height="170"/>
-💜 [fusang.cibr.ac.cn](fusang.cibr.ac.cn/) 💜
+# Fusang <img align="right" src="logo.jpg" width="170" height="170"/>
+
+- forked from: [Jerry-0591/Fusang](https://github.com/Jerry-0591/Fusang)
+- website at: <https://fusang.cibr.ac.cn/>
 
 Fusang is a framework used for the reconstruction of phylogenetic tree via deep learning methods. For current version, it supports the reconstruction of MSA with 4-40 taxas and the length of it should be less than 10,000.
 
@@ -11,7 +13,15 @@ The limit usage of memory is ~24GB for current repository, for most cases, the m
 
 ## Software requirements
 
-The configuration of the environment see **Environment_setting.md** of this repository
+The configuration of the environment (as in the paper) see [Environment_setting.md](Environment_setting.md) of this repository.
+
+Or simply run following commands to create a virtual environment:
+
+```sh
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
 
 ## Example of usage
 
@@ -40,6 +50,7 @@ The meaning of these two mandatory parameter:
 --------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 ### 2. Parameter setting
+
 `--msa_dir` The path of your msa file
 
 `--save_prefix` The prefix of the result file
@@ -53,9 +64,6 @@ You can set the parameters as follows for specific scenario
 `--branch_model` The distribution type of the branches, which has gamma (default) and uniform as choices
 
 `--window coverage` The coverage of slide window, which decides the step of this algorithm. The default setting is 1
-
-
-
 
 
 ## Meaning of each file in this repository
@@ -84,10 +92,8 @@ You can set the parameters as follows for specific scenario
 
 ## References
 
-Zou Z, Zhang H, Guan Y, Zhang JJMB, Evolution. 2020. Deep residual neural networks resolve quartet molecular phylogenies.  37:1495-1507.
-
-Suvorov A, Hochuli J, Schrider DRJSB. 2019. Accurate Inference of Tree Topologies from Multiple Sequence Alignments Using Deep Learning.  69:221-233.
-
-https://github.com/martin-sicho/PTreeGenerator/blob/c6eddaf613a0058959b2f077458fad6fe689241e/src/ptreegen/parsimony.py
+- Zou Z, Zhang H, Guan Y, Zhang JJMB, Evolution. 2020. Deep residual neural networks resolve quartet molecular phylogenies. 37:1495-1507. doi: [10.1093/nar/gkad805](https://doi.org/10.1093/nar/gkad805)
+- Suvorov A, Hochuli J, Schrider DRJSB. 2019. Accurate Inference of Tree Topologies from Multiple Sequence Alignments Using Deep Learning. 69:221-233. doi: [10.1093/sysbio/syz060](https://doi.org/10.1093/sysbio/syz060)
+- <https://github.com/martin-sicho/PTreeGenerator/blob/c6eddaf613a0058959b2f077458fad6fe689241e/src/ptreegen/parsimony.py>
 
 

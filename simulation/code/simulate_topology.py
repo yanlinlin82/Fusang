@@ -118,7 +118,7 @@ def gen_newick(q, seed, taxa_num, range_of_taxa_num, distribution_of_internal_br
     tree.unroot()
 
     ans = tree.write(format=5)
-    match = re.findall('taxon\d+:', ans)
+    match = re.findall(r'taxon\d+:', ans)
     idx = ['0']
     number_set = [i for i in range(1, taxa_num)]
 

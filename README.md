@@ -20,7 +20,8 @@ Or simply run following commands to create a virtual environment:
 ```sh
 python -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+pip install -U pip
+pip install -U -r requirements.txt
 ```
 
 ## Example of usage

@@ -6,3 +6,4 @@ biopython
 notebook
 matplotlib
 scikit-learn
+ipykernel

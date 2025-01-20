@@ -2,3 +2,4 @@
 dl_output/
 .venv/
 data/*.nh
+__pycache__

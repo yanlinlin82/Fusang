@@ -25,8 +25,8 @@ import keras
 def get_dl_model_1200():
     '''
     get the definition of dl model 1200
-    this model aims to solve the default case 
-    which are length larger than 1200 
+    this model aims to solve the default case
+    which are length larger than 1200
     '''
     conv_x=[4,1,1,1,1,1,1,1]
     conv_y=[1,2,2,2,2,2,2,2]
@@ -35,14 +35,14 @@ def get_dl_model_1200():
 
     visible = keras.layers.Input(shape=(4,1200,1))
     x = visible
-        
+
     for l in list(range(0,8)):
-        x = keras.layers.ZeroPadding2D(padding=((0, 0), (0,conv_y[l]-1)))(x)        
+        x = keras.layers.ZeroPadding2D(padding=((0, 0), (0,conv_y[l]-1)))(x)
         x = keras.layers.Conv2D(filters=filter_s[l], kernel_size=(conv_x[l], conv_y[l]), strides=1, activation='relu')(x)
         x = keras.layers.BatchNormalization()(x)
         x = keras.layers.Dropout(rate=0.2)(x)
         x = keras.layers.AveragePooling2D(pool_size=(1,pool[l]))(x)
-        
+
     flat = keras.layers.Flatten()(x)
 
     y = keras.layers.Reshape((4,1200))(visible)
@@ -62,8 +62,8 @@ def get_dl_model_1200():
 def get_dl_model_240():
     '''
     get the definition of dl model 240
-    this model aims to solve the short length case 
-    which are length larger than 240 
+    this model aims to solve the short length case
+    which are length larger than 240
     '''
     conv_x=[4,1,1,1,1,1,1,1]
     conv_y=[1,2,2,2,2,2,2,2]
@@ -74,7 +74,7 @@ def get_dl_model_240():
     x = visible
 
     for l in list(range(0,8)):
-        x = keras.layers.ZeroPadding2D(padding=((0, 0), (0,conv_y[l]-1)))(x)        
+        x = keras.layers.ZeroPadding2D(padding=((0, 0), (0,conv_y[l]-1)))(x)
         x = keras.layers.Conv2D(filters=filter_s[l], kernel_size=(conv_x[l], conv_y[l]), strides=1, activation='relu')(x)
         x = keras.layers.BatchNormalization()(x)
         x = keras.layers.Dropout(rate=0.2)(x)

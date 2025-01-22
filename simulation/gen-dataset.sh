@@ -42,7 +42,7 @@ if [ -e "${out_dir}" ]; then
     exit 1
 fi
 
-mkdir -pv "${out_dir}"/{simulate_data,label_file,fasta_data,numpy_data}/
+mkdir -pv "${out_dir}"/{label_file,simulate_data,fasta_data,numpy_data}/
 
 time python code/simulate_topology.py \
     --seed ${seed} \

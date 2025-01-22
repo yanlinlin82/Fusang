@@ -56,7 +56,7 @@ def gen_newick(q, seed, taxa_num, range_of_taxa_num, distribution_of_internal_br
     random.seed(seed)
     np.random.seed(seed)
 
-    taxon_count_model=scipy.stats.uniform(range_of_taxa_num[0], range_of_taxa_num[1])
+    taxon_count_model = scipy.stats.uniform(range_of_taxa_num[0], range_of_taxa_num[1])
     tree = ete3.PhyloTree()
     tree.populate(int(taxon_count_model.rvs()), random_branches=True)
     current_internal_index = 0
@@ -161,10 +161,6 @@ output_newick = args.output_newick
 
 
 q = multiprocessing.Manager().Queue()
-
-#q, range_of_taxa_num, distribution_of_internal_branch_length,
-#distribution_of_external_branch_length, range_of_mean_pairwise_divergence
-
 
 para_list = [(q, seed + i, taxa_num, range_of_taxa_num, distribution_of_internal_branch_length,
     distribution_of_external_branch_length, range_of_mean_pairwise_divergence) for i in range(0, num_of_topology)]

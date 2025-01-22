@@ -1,5 +1,7 @@
 #!/bin/bash
 
+app_dir=$(dirname $(readlink -f $0))
+
 if [ -z "${14}" ]; then
     echo
     echo "Usage: $0 <out-dir> <seed> \\"
@@ -54,17 +56,24 @@ time python code/simulate_topology.py \
     --max_indel_length ${max_indel_length} \
     --output_newick ${out_dir}/label_file/newick.csv
 
+if [ ! -e "${out_dir}/label_file/newick.csv" ]; then
+    echo "Error: Failed to generate 'newick.csv'."
+    exit 1
+fi
+
 time Rscript code/gen_control_file.R \
     ${seed} ${taxa_num} ${num_of_topology} ${len_of_msa_lower_bound} ${len_of_msa_upper_bound} \
     ${indel_substitution_rate_lower_bound} ${indel_substitution_rate_upper_bound} \
     ${max_indel_length} ${out_dir}/label_file/newick.csv ${out_dir}/simulate_data/control.txt
 
+if [ ! -e "${out_dir}/simulate_data/control.txt" ]; then
+    echo "Error: Failed to generate 'control.txt'."
+    exit 1
+fi
+
 (
-    cp -v ./indelible ${out_dir}/
-    chmod +x ${out_dir}/indelible
     cd ${out_dir}/simulate_data/
-    ../indelible
-    rm -fv ../indelible
+    ${app_dir}/indelible
 )
 
 time python code/extract_fasta_data.py \

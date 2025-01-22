@@ -8,7 +8,7 @@ import numpy as np
 from multiprocessing import Pool
 import multiprocessing
 
-def _get_extremes(tree):    
+def _get_extremes(tree):
     longest_distance = float('-inf')
     shortest_distance = float('+inf')
     nearest = None
@@ -50,7 +50,7 @@ def _find_lba_branches(tree):
     return min_branch_ratio, leaves
 
 
-def gen_newick(q, seed, taxa_num, range_of_taxa_num, distribution_of_internal_branch_length, 
+def gen_newick(q, seed, taxa_num, range_of_taxa_num, distribution_of_internal_branch_length,
     distribution_of_external_branch_length, range_of_mean_pairwise_divergence):
 
     random.seed(seed)
@@ -85,7 +85,7 @@ def gen_newick(q, seed, taxa_num, range_of_taxa_num, distribution_of_internal_br
             current_internal_index += 1
 
     total_tree_leaves = [ele.name for ele in tree.get_leaves()]
-    
+
     pairwise_divergence_list = []
 
     for i in range(0, len(total_tree_leaves)-1):
@@ -96,7 +96,7 @@ def gen_newick(q, seed, taxa_num, range_of_taxa_num, distribution_of_internal_br
 
     mean_pairwise_divergence = np.mean(np.array(pairwise_divergence_list))
 
-    scale_ratio = expected_mean_pairwise_divergence / mean_pairwise_divergence 
+    scale_ratio = expected_mean_pairwise_divergence / mean_pairwise_divergence
 
     for node in tree.traverse("preorder"):
         node.dist = max(0.0001, node.dist*scale_ratio)
@@ -162,7 +162,7 @@ output_newick = args.output_newick
 
 q = multiprocessing.Manager().Queue()
 
-#q, range_of_taxa_num, distribution_of_internal_branch_length, 
+#q, range_of_taxa_num, distribution_of_internal_branch_length,
 #distribution_of_external_branch_length, range_of_mean_pairwise_divergence
 
 
@@ -179,8 +179,9 @@ while not q.empty():
     csv_list.append(tmp_topo)
 
 csv_list.sort() # keep the same order for reproducibility
-print(len(csv_list))
 
 dictionary = {"newick" : csv_list}
 data=DataFrame(dictionary)
 data.to_csv(output_newick)
+
+print(f"Generated {len(csv_list)} topologies and saved to '{output_newick}'.")

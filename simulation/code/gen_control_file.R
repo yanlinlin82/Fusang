@@ -23,27 +23,30 @@ library('phangorn')
 library('MCMCpack')
 library('dplyr')
 library('scales')
-options(scipen=999)
+options(scipen=999) # disable scientific notation
+
 #Model block generating function
 model_gen=function(modelset,file,max_indel_length,indel_substitution_rate_lower_bound,indel_substitution_rate_upper_bound)
 {
+  modelnames = paste(modelset, 'Model', seq_along(modelset), sep='')
+
   len=max_indel_length
-  model_id=1
-  models_selected=c()
-  for (model in modelset)
-  {
+  for (i in seq_along(modelset)) {
+    model = modelset[i]
     model_orig=model
+    model_name = modelnames[i]
+
     #Invariant sites Unif
     I=runif(1,0,1)
     A=runif(1,0,5)
     #Nucl proportions DIRICHLET 
-    options(digits=5)
+    options(digits=5) # round to 5 decimal places
     Pi=format(rdirichlet(1, alpha=c(5,5,5,5)))
     #IndelRate = format(runif(1,indel_substitution_rate_lower_bound,indel_substitution_rate_upper_bound))
 
-    models_selected=c(models_selected,paste(model,'Model',model_id,sep = ''))
-    write(paste('\n[MODEL] ',model,'Model',model_id,sep = ''),file,append=T)
-    options(digits=2)
+    output_lines = paste('[MODEL] ',model_name)
+
+    options(digits=2) # round to 2 decimal places
     if (model %in% c('HKY','K80')){
       model=paste(c(model,' ',format(runif(1,0,3))),sep = '')
     } else if (model == 'TrN'){
@@ -59,14 +62,19 @@ model_gen=function(modelset,file,max_indel_length,indel_substitution_rate_lower_
     } else {
       model=model
     }
-    model_id=model_id+1
-    write(paste(' [submodel] ',paste(model,collapse=' '),'\n [rates] ',I,' ',A,' 0','\n [indelmodel] POW 1.5 ', paste(len,collapse=' '), '\n [indelrate] ', paste(runif(1,indel_substitution_rate_lower_bound,indel_substitution_rate_upper_bound),collapse='')),file,append=T)
+
+    output_lines = c(output_lines, paste(' [submodel] ',paste(model,collapse=' ')))
+    output_lines = c(output_lines, paste(' [rates] ',I,' ',A,' 0'))
+    output_lines = c(output_lines, paste(' [indelmodel] POW 1.5 ', paste(len,collapse=' ')))
+    output_lines = c(output_lines, paste(' [indelrate] ', paste(runif(1,indel_substitution_rate_lower_bound,indel_substitution_rate_upper_bound),collapse='')))
     if (model_orig %in% c('F81','HKY','TrN','TIM','TVM','GTR'))
     {
-      write(paste(' [statefreq]',paste(Pi,collapse=' ')),file,append=T)
+      output_lines = c(output_lines, paste(' [statefreq]',paste(Pi,collapse=' ')))
     }
+
+    write(output_lines, file, append=T, sep='\n')
   }
-  return(models_selected)
+  return(modelnames)
 }
 
 indelib_gen=function(n_taxa,n_sim,len_of_msa_lower_bound,len_of_msa_upper_bound,indel_substitution_rate_lower_bound,indel_substitution_rate_upper_bound,max_indel_length,in_newick,out_control) # n_sim = number of simulations per topology

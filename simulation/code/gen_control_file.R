@@ -17,82 +17,90 @@ max_indel_length = as.numeric(args[8])
 in_newick = args[9]
 out_control = args[10]
 
-set.seed(seed)
+library(MCMCpack)
 
-library('MCMCpack')
+set.seed(seed)
 options(scipen=999) # disable scientific notation
 
 #Model block generating function
 model_gen=function(modelset,file,max_indel_length,indel_substitution_rate_lower_bound,indel_substitution_rate_upper_bound)
 {
   modelnames = paste(modelset, 'Model', seq_along(modelset), sep='')
+  results = list()
 
-  len=max_indel_length
   for (i in seq_along(modelset)) {
     model = modelset[i]
-    model_orig=model
     model_name = modelnames[i]
 
     output_lines = paste('[MODEL] ',model_name)
 
-    options(digits=2) # round to 2 decimal places
+    options(digits = 2) # round to 2 decimal places
     if (model %in% c('HKY','K80')){
-      model=paste(c(model,' ',format(runif(1,0,3))),sep = '')
+      submodel = paste(c(model, format(runif(1,0,3))), collapse=" ")
     } else if (model == 'TrN'){
-      model=paste(c(model,' ',format(runif(2,0,3))),sep = '')
+      submodel = paste(c(model, format(runif(2,0,3))), collapse=" ")
     } else if (model %in% c('TIM' ,'TIMef')){
-      model=paste(c(model,' ',format(runif(3,0,3))),sep = '')
+      submodel = paste(c(model, format(runif(3,0,3))), collapse=" ")
     } else if (model == 'TVM'){
-      model=paste(c(model,' ',format(runif(4,0,3))),sep = '')
+      submodel = paste(c(model, format(runif(4,0,3))), collapse=" ")
     } else if (model %in% c('SYM','GTR')){
-      model=paste(c(model,' ',format(runif(5,0,3))),sep = '')
+      submodel = paste(c(model, format(runif(5,0,3))), collapse=" ")
     } else if (model == 'UNREST'){
-      model=paste(c(model,' ',format(runif(11,0,3))),sep = '')
+      submodel = paste(c(model, format(runif(11,0,3))), collapse=" ")
     } else {
-      model=model
+      submodel = model
     }
 
     #Invariant sites Unif
-    I=runif(1,0,1)
-    A=runif(1,0,5)
-    output_lines = c(output_lines, paste(' [submodel] ',paste(model,collapse=' ')))
-    output_lines = c(output_lines, paste(' [rates] ',I,' ',A,' 0'))
-    output_lines = c(output_lines, paste(' [indelmodel] POW 1.5 ', paste(len,collapse=' ')))
-    output_lines = c(output_lines, paste(' [indelrate] ', paste(runif(1,indel_substitution_rate_lower_bound,indel_substitution_rate_upper_bound),collapse='')))
-    if (model_orig %in% c('F81','HKY','TrN','TIM','TVM','GTR'))
+    I = runif(1,0,1)
+    A = runif(1,0,5)
+    indel_rate = runif(1, indel_substitution_rate_lower_bound, indel_substitution_rate_upper_bound)
+    output_lines = c(output_lines, paste(' [submodel] ', submodel))
+    output_lines = c(output_lines, paste(' [rates] ', I, ' ', A, ' 0'))
+    output_lines = c(output_lines, paste(' [indelmodel] POW 1.5 ', max_indel_length))
+    output_lines = c(output_lines, paste(' [indelrate] ', indel_rate))
+    if (model %in% c('F81','HKY','TrN','TIM','TVM','GTR'))
     {
-      options(digits=5) # round to 5 decimal places
-      Pi=format(rdirichlet(1, alpha=c(5,5,5,5))) # Nucl proportions DIRICHLET
-      output_lines = c(output_lines, paste(' [statefreq]',paste(Pi,collapse=' ')))
+      options(digits = 5) # round to 5 decimal places
+      Pi = format(rdirichlet(1, alpha = c(5,5,5,5))) # Nucl proportions DIRICHLET
+      output_lines = c(output_lines, paste(' [statefreq]', paste(Pi, collapse=" ")))
     }
 
-    write(output_lines, file, append=T, sep='\n')
+    results[[model_name]] = output_lines
   }
-  return(modelnames)
+  return(results)
 }
 
-indelib_gen=function(n_taxa,n_sim,len_of_msa_lower_bound,len_of_msa_upper_bound,indel_substitution_rate_lower_bound,indel_substitution_rate_upper_bound,max_indel_length,in_newick,out_control) # n_sim = number of simulations per topology
+indelib_gen = function(n_taxa,n_sim,len_of_msa_lower_bound,len_of_msa_upper_bound,indel_substitution_rate_lower_bound,indel_substitution_rate_upper_bound,max_indel_length,in_newick,out_control) # n_sim = number of simulations per topology
 {
-  
-  write(paste('[TYPE] NUCLEOTIDE 2\n[SETTINGS]\n [output] FASTA\n [randomseed] ',round(runif(1,1,100000))),out_control)
-  n_datasets=n_sim
-  
+  output_lines = "[TYPE] NUCLEOTIDE 2"
+  output_lines = c(output_lines, "[SETTINGS]")
+  output_lines = c(output_lines, " [output] FASTA")
+  output_lines = c(output_lines, paste(" [randomseed]", round(runif(1,1,100000)), collapse=" "))
+  write(output_lines, out_control, sep='\n')
+
+  n_datasets = n_sim
+
   #Set MODEL block
-  modelset=sample(c('JC','TIM','TIMef','GTR','UNREST'),n_datasets,replace=T)
-  MODEL=model_gen(modelset,out_control,max_indel_length,indel_substitution_rate_lower_bound,indel_substitution_rate_upper_bound)
-  
+  modelset = sample(c('JC','TIM','TIMef','GTR','UNREST'),n_datasets,replace=T)
+  MODEL_LIST = model_gen(modelset,out_control,max_indel_length,indel_substitution_rate_lower_bound,indel_substitution_rate_upper_bound)
+
+  for (model_name in names(MODEL_LIST)) {
+    write(MODEL_LIST[[model_name]], out_control, append=T, sep='\n')
+  }
+
   #Set TREE block
-  ID_TREE=paste(rep("t_sim",times=n_datasets),1:n_datasets,sep="")
+  ID_TREE = paste(rep("t_sim",times=n_datasets),1:n_datasets,sep="")
   print("Newick")
-  NEWICK=read.csv(in_newick,header=TRUE)
-  NEWICK=NEWICK[,2]
+  NEWICK = read.csv(in_newick,header=TRUE)
+  NEWICK = NEWICK[,2]
   print("Done newick")
   write.table(data.frame('[TREE]',ID_TREE,NEWICK),out_control,append=T,quote=F,row.names=F,col.names =F)
-  
+
   #Set PARTITIONS block
-  PNAME=paste("p",1:n_datasets,sep="")
-  write.table(data.frame('[PARTITIONS]',PNAME,"[",ID_TREE,MODEL,round(runif(n_sim,len_of_msa_lower_bound,len_of_msa_upper_bound)),"]"),out_control,append=T,quote=F,row.names=F,col.names =F)
-  
+  PNAME = paste("p",1:n_datasets,sep="")
+  write.table(data.frame('[PARTITIONS]',PNAME,"[",ID_TREE,names(MODEL_LIST),round(runif(n_sim,len_of_msa_lower_bound,len_of_msa_upper_bound)),"]"),out_control,append=T,quote=F,row.names=F,col.names =F)
+
   #Set EVOLVE block
   write('[EVOLVE]',out_control,append=T)
   write.table(data.frame(PNAME,1,apply(data.frame(ID_TREE),1,paste,collapse="")),out_control,append=T,quote=F,row.names=F,col.names =F)

@@ -61,7 +61,7 @@ if [ ! -e "${out_dir}/label_file/newick.csv" ]; then
     exit 1
 fi
 
-time Rscript code/gen_control_file.R \
+time python code/gen_control_file.py \
     ${seed} ${taxa_num} ${num_of_topology} ${len_of_msa_lower_bound} ${len_of_msa_upper_bound} \
     ${indel_substitution_rate_lower_bound} ${indel_substitution_rate_upper_bound} \
     ${max_indel_length} ${out_dir}/label_file/newick.csv ${out_dir}/simulate_data/control.txt
@@ -73,7 +73,7 @@ fi
 
 (
     cd ${out_dir}/simulate_data/
-    ${app_dir}/indelible
+    time ${app_dir}/indelible
 )
 
 time python code/extract_fasta_data.py \

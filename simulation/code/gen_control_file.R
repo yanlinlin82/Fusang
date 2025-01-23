@@ -19,10 +19,7 @@ out_control = args[10]
 
 set.seed(seed)
 
-library('phangorn')
 library('MCMCpack')
-library('dplyr')
-library('scales')
 options(scipen=999) # disable scientific notation
 
 #Model block generating function
@@ -35,14 +32,6 @@ model_gen=function(modelset,file,max_indel_length,indel_substitution_rate_lower_
     model = modelset[i]
     model_orig=model
     model_name = modelnames[i]
-
-    #Invariant sites Unif
-    I=runif(1,0,1)
-    A=runif(1,0,5)
-    #Nucl proportions DIRICHLET 
-    options(digits=5) # round to 5 decimal places
-    Pi=format(rdirichlet(1, alpha=c(5,5,5,5)))
-    #IndelRate = format(runif(1,indel_substitution_rate_lower_bound,indel_substitution_rate_upper_bound))
 
     output_lines = paste('[MODEL] ',model_name)
 
@@ -63,12 +52,17 @@ model_gen=function(modelset,file,max_indel_length,indel_substitution_rate_lower_
       model=model
     }
 
+    #Invariant sites Unif
+    I=runif(1,0,1)
+    A=runif(1,0,5)
     output_lines = c(output_lines, paste(' [submodel] ',paste(model,collapse=' ')))
     output_lines = c(output_lines, paste(' [rates] ',I,' ',A,' 0'))
     output_lines = c(output_lines, paste(' [indelmodel] POW 1.5 ', paste(len,collapse=' ')))
     output_lines = c(output_lines, paste(' [indelrate] ', paste(runif(1,indel_substitution_rate_lower_bound,indel_substitution_rate_upper_bound),collapse='')))
     if (model_orig %in% c('F81','HKY','TrN','TIM','TVM','GTR'))
     {
+      options(digits=5) # round to 5 decimal places
+      Pi=format(rdirichlet(1, alpha=c(5,5,5,5))) # Nucl proportions DIRICHLET
       output_lines = c(output_lines, paste(' [statefreq]',paste(Pi,collapse=' ')))
     }
 

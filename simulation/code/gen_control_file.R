@@ -28,42 +28,42 @@ model_gen=function(modelset,file,max_indel_length,indel_substitution_rate_lower_
   modelnames = paste(modelset, 'Model', seq_along(modelset), sep='')
   results = list()
 
+  N = length(modelset)
+  I = runif(N, 0, 1)
+  A = runif(N, 0, 5)
+  Pi = rdirichlet(N, alpha = c(5,5,5,5)) # Nucl proportions DIRICHLET
+  indel_rate = runif(N, indel_substitution_rate_lower_bound, indel_substitution_rate_upper_bound)
+
   for (i in seq_along(modelset)) {
     model = modelset[i]
     model_name = modelnames[i]
 
     output_lines = paste('[MODEL] ',model_name)
 
-    options(digits = 2) # round to 2 decimal places
     if (model %in% c('HKY','K80')){
-      submodel = paste(c(model, format(runif(1,0,3))), collapse=" ")
+      submodel = paste(c(model, format(runif(1,0,3), digits=2)), collapse=" ")
     } else if (model == 'TrN'){
-      submodel = paste(c(model, format(runif(2,0,3))), collapse=" ")
+      submodel = paste(c(model, format(runif(2,0,3), digits=2)), collapse=" ")
     } else if (model %in% c('TIM' ,'TIMef')){
-      submodel = paste(c(model, format(runif(3,0,3))), collapse=" ")
+      submodel = paste(c(model, format(runif(3,0,3), digits=2)), collapse=" ")
     } else if (model == 'TVM'){
-      submodel = paste(c(model, format(runif(4,0,3))), collapse=" ")
+      submodel = paste(c(model, format(runif(4,0,3), digits=2)), collapse=" ")
     } else if (model %in% c('SYM','GTR')){
-      submodel = paste(c(model, format(runif(5,0,3))), collapse=" ")
+      submodel = paste(c(model, format(runif(5,0,3), digits=2)), collapse=" ")
     } else if (model == 'UNREST'){
-      submodel = paste(c(model, format(runif(11,0,3))), collapse=" ")
+      submodel = paste(c(model, format(runif(11,0,3), digits=2)), collapse=" ")
     } else {
       submodel = model
     }
+    output_lines = c(output_lines, paste(' [submodel]', submodel))
 
-    #Invariant sites Unif
-    I = runif(1,0,1)
-    A = runif(1,0,5)
-    indel_rate = runif(1, indel_substitution_rate_lower_bound, indel_substitution_rate_upper_bound)
-    output_lines = c(output_lines, paste(' [submodel] ', submodel))
-    output_lines = c(output_lines, paste(' [rates] ', I, ' ', A, ' 0'))
-    output_lines = c(output_lines, paste(' [indelmodel] POW 1.5 ', max_indel_length))
-    output_lines = c(output_lines, paste(' [indelrate] ', indel_rate))
+    output_lines = c(output_lines, paste(' [rates]', paste(I[i], A[i], 0), collapse=" "))
+    output_lines = c(output_lines, paste(' [indelmodel] POW 1.5', max_indel_length))
+    output_lines = c(output_lines, paste(' [indelrate]', indel_rate[i]))
+
     if (model %in% c('F81','HKY','TrN','TIM','TVM','GTR'))
     {
-      options(digits = 5) # round to 5 decimal places
-      Pi = format(rdirichlet(1, alpha = c(5,5,5,5))) # Nucl proportions DIRICHLET
-      output_lines = c(output_lines, paste(' [statefreq]', paste(Pi, collapse=" ")))
+      output_lines = c(output_lines, paste(' [statefreq]', paste(format(Pi[i,], digits=5), collapse=" ")))
     }
 
     results[[model_name]] = output_lines

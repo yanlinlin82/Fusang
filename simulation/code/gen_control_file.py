@@ -1,4 +1,3 @@
-import os
 import sys
 import numpy as np
 from multiprocessing import Pool, cpu_count
@@ -54,7 +53,7 @@ def process_single_model(args):
 
 def model_gen(modelset, file_path, max_indel_length,
               indel_substitution_rate_lower_bound,
-              indel_substitution_rate_upper_bound):
+              indel_substitution_rate_upper_bound, n_process):
     """Generate model configurations in parallel"""
     # Set random seed
     np.random.seed(None)  # Ensure different random seeds for each process
@@ -66,7 +65,10 @@ def model_gen(modelset, file_path, max_indel_length,
             for i, model in enumerate(modelset, 1)]
 
     # Use process pool for parallel processing
-    n_cores = max(1, cpu_count() - 1)  # Reserve one core for system
+    if n_process <= 0:
+        n_cores = max(1, cpu_count() - 1)  # Reserve one core for system
+    else:
+        n_cores = n_process
     with Pool(n_cores) as pool:
         results = pool.map(process_single_model, args)
 
@@ -79,7 +81,7 @@ def model_gen(modelset, file_path, max_indel_length,
     # Return list of model names
     return [result['name'] for result in results]
 
-def indelib_gen(n_taxa, n_sim, len_of_msa_bounds, indel_rate_bounds,
+def indelib_gen(n_taxa, n_sim, n_process, len_of_msa_bounds, indel_rate_bounds,
                 max_indel_length, in_newick, out_control):
     """Main function for generating control file"""
     # Write basic settings
@@ -95,7 +97,7 @@ def indelib_gen(n_taxa, n_sim, len_of_msa_bounds, indel_rate_bounds,
     modelset = np.random.choice(possible_models, size=n_sim, replace=True)
 
     model_names = model_gen(modelset, out_control, max_indel_length,
-                          *indel_rate_bounds)
+                            indel_rate_bounds[0], indel_rate_bounds[1], n_process)
 
     # Read Newick file
     import pandas as pd
@@ -132,9 +134,8 @@ def indelib_gen(n_taxa, n_sim, len_of_msa_bounds, indel_rate_bounds,
             f.write(f"{pname} 1 {tid}\n")
 
 if __name__ == "__main__":
-    import sys
-    if len(sys.argv) != 11:
-        print("Usage: python gen_control_file.py seed n_taxa n_sim "
+    if len(sys.argv) != 12:
+        print("Usage: python gen_control_file.py seed n_taxa n_sim n_process "
               "len_of_msa_lower len_of_msa_upper "
               "indel_rate_lower indel_rate_upper "
               "max_indel_length in.newick.csv out.control.txt")
@@ -144,15 +145,16 @@ if __name__ == "__main__":
     seed = int(sys.argv[1])
     n_taxa = int(sys.argv[2])
     n_sim = int(sys.argv[3])
-    len_of_msa_bounds = (int(sys.argv[4]), int(sys.argv[5]))
-    indel_rate_bounds = (float(sys.argv[6]), float(sys.argv[7]))
-    max_indel_length = int(sys.argv[8])
-    in_newick = sys.argv[9]
-    out_control = sys.argv[10]
+    n_process = int(sys.argv[4])
+    len_of_msa_bounds = (int(sys.argv[5]), int(sys.argv[6]))
+    indel_rate_bounds = (float(sys.argv[7]), float(sys.argv[8]))
+    max_indel_length = int(sys.argv[9])
+    in_newick = sys.argv[10]
+    out_control = sys.argv[11]
 
     # Set random seed
     np.random.seed(seed)
 
     # Run main function
-    indelib_gen(n_taxa, n_sim, len_of_msa_bounds, indel_rate_bounds,
+    indelib_gen(n_taxa, n_sim, n_process, len_of_msa_bounds, indel_rate_bounds,
                 max_indel_length, in_newick, out_control)

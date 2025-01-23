@@ -5,7 +5,7 @@ import re
 import argparse
 from pandas.core.frame import DataFrame
 import numpy as np
-from multiprocessing import Pool
+from multiprocessing import Pool, cpu_count
 import multiprocessing
 
 def _get_extremes(tree):
@@ -161,6 +161,9 @@ output_newick = args.output_newick
 
 
 q = multiprocessing.Manager().Queue()
+
+if num_of_process <= 0:
+    num_of_process = max(1, cpu_count() - 1)
 
 para_list = [(q, seed + i, taxa_num, range_of_taxa_num, distribution_of_internal_branch_length,
     distribution_of_external_branch_length, range_of_mean_pairwise_divergence) for i in range(0, num_of_topology)]

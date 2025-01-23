@@ -3,3 +3,5 @@ dl_output/
 .venv/
 data/*.nh
 __pycache__
+simulation/*log*
+simulation/*bak*

@@ -37,44 +37,62 @@ indel_substitution_rate_lower_bound="${12}"
 indel_substitution_rate_upper_bound="${13}"
 max_indel_length="${14}"
 
-if [ -e "${out_dir}" ]; then
-    echo "Error: Output directory already exists."
-    exit 1
-fi
+#if [ -e "${out_dir}" ]; then
+#    echo "Error: Output directory already exists."
+#    exit 1
+#fi
 
 mkdir -pv "${out_dir}"/{label_file,simulate_data,fasta_data,numpy_data}/
 
-time python code/simulate_topology.py \
-    --seed ${seed} \
-    --num_of_topology ${num_of_topology} \
-    --taxa_num ${taxa_num} \
-    --range_of_taxa_num "${range_of_taxa_num}" \
-    --num_of_process ${num_of_process} \
-    --distribution_of_internal_branch_length "${distribution_of_internal_branch_length}" \
-    --distribution_of_external_branch_length "${distribution_of_external_branch_length}" \
-    --range_of_mean_pairwise_divergence "${range_of_mean_pairwise_divergence}" \
-    --max_indel_length ${max_indel_length} \
-    --output_newick ${out_dir}/label_file/newick.csv
+if [ ! -e "${out_dir}/label_file/newick.csv" ]; then
+    time python code/simulate_topology.py \
+        --seed ${seed} \
+        --num_of_topology ${num_of_topology} \
+        --taxa_num ${taxa_num} \
+        --range_of_taxa_num "${range_of_taxa_num}" \
+        --num_of_process ${num_of_process} \
+        --distribution_of_internal_branch_length "${distribution_of_internal_branch_length}" \
+        --distribution_of_external_branch_length "${distribution_of_external_branch_length}" \
+        --range_of_mean_pairwise_divergence "${range_of_mean_pairwise_divergence}" \
+        --max_indel_length ${max_indel_length} \
+        --output_newick ${out_dir}/label_file/newick.csv
+fi
 
 if [ ! -e "${out_dir}/label_file/newick.csv" ]; then
     echo "Error: Failed to generate 'newick.csv'."
     exit 1
 fi
 
-time python code/gen_control_file.py \
-    ${seed} ${taxa_num} ${num_of_topology} ${len_of_msa_lower_bound} ${len_of_msa_upper_bound} \
-    ${indel_substitution_rate_lower_bound} ${indel_substitution_rate_upper_bound} \
-    ${max_indel_length} ${out_dir}/label_file/newick.csv ${out_dir}/simulate_data/control.txt
+if [ ! -e "${out_dir}/simulate_data/trees.txt" ]; then
 
-if [ ! -e "${out_dir}/simulate_data/control.txt" ]; then
-    echo "Error: Failed to generate 'control.txt'."
-    exit 1
+    time python code/simulate_sequence.py \
+        ${seed} ${taxa_num} ${num_of_topology} ${num_of_process} \
+        ${len_of_msa_lower_bound} ${len_of_msa_upper_bound} \
+        ${indel_substitution_rate_lower_bound} ${indel_substitution_rate_upper_bound} \
+        ${max_indel_length} ${out_dir}/label_file/newick.csv ${out_dir}/simulate_data/ \
+        ${app_dir}/indelible
+
+    time (
+        cd ${out_dir}/simulate_data/
+        ls | grep batch_ | while read d; do
+            ls $d/ | grep fas$ | while read f; do
+                if [ ! -e $f ]; then
+                    ln -s $d/$f .
+                fi
+            done
+        done
+
+        (
+            ls | grep batch_ | head -n1 | while read d; do
+                head -n6 $d/trees.txt
+            done
+
+            ls | grep batch_ | while read d; do
+                tail -n+7 $d/trees.txt
+            done
+        ) > trees.txt
+    )
 fi
-
-(
-    cd ${out_dir}/simulate_data/
-    time ${app_dir}/indelible
-)
 
 time python code/extract_fasta_data.py \
     --in_dir ${out_dir}/simulate_data/ \
@@ -87,5 +105,3 @@ time python code/gen_numpy.py \
     --in_trees_txt ${out_dir}/label_file/trees.txt \
     --in_fasta_dir ${out_dir}/fasta_data/ \
     --out_dir ${out_dir}/numpy_data/
-
-#rm -rf ${out_dir}/simulate_data/

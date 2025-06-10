@@ -469,12 +469,16 @@ def get_numpy(aln_file):
         current version only supports the total length of msa less than 10K
     '''
     aln = open(aln_file)
-    dic = {'A':'0','T':'1','C':'2','G':'3','-':'4', 'N':'4'}
 
-    # for masking other unknown bases
-    other_base = ['R', 'Y', 'K', 'M', 'U', 'S', 'W', 'B', 'D', 'H', 'V', 'X']
-    for ele in other_base:
-        dic[ele] = '4'
+    # expand the base mapping dictionary, including all possible nucleotide characters
+    dic = {
+        'A':'0', 'T':'1', 'C':'2', 'G':'3', '-':'4', 'N':'4',
+        'R':'4', 'Y':'4', 'K':'4', 'M':'4', 'U':'4', 'S':'4',
+        'W':'4', 'B':'4', 'D':'4', 'H':'4', 'V':'4', 'X':'4',
+        'a':'0', 't':'1', 'c':'2', 'g':'3', 'n':'4', 'r':'4',
+        'y':'4', 'k':'4', 'm':'4', 'u':'4', 's':'4', 'w':'4',
+        'b':'4', 'd':'4', 'h':'4', 'v':'4', 'x':'4'
+    }
 
     matrix_out=[]
     fasta_dic={}
@@ -483,8 +487,11 @@ def get_numpy(aln_file):
             header=line[1:].rstrip('\n').strip()
             fasta_dic[header]=[]
         elif line[0].isalpha() or line[0]=='-':
+            # replace all possible nucleotide characters
             for base, num in dic.items():
                 line=line[:].rstrip('\n').strip().replace(base,num)
+            # remove any non-digit characters
+            line = ''.join(c for c in line if c.isdigit())
             line=list(line)
             line=[int(n) for n in line]
             fasta_dic[header] += line+[4]*(14000-len(line))

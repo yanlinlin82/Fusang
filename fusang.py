@@ -1,6 +1,13 @@
 import os
 import re
 import sys
+import warnings
+
+# Suppress TensorFlow and NumPy warnings
+os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # Suppress INFO and WARNING messages
+warnings.filterwarnings('ignore', category=FutureWarning)
+
 import numpy as np
 import functools
 import argparse
@@ -827,4 +834,3 @@ if __name__ == '__main__':
     build_log = open('./dl_output/{}.txt'.format(save_prefix), 'a')
     build_log.write(searched_tree)
     build_log.close()
-

@@ -1,5 +1,9 @@
-# Fusang <img align="right" src="https://github.com/Jerry-0591/Fusang/blob/main/logo.jpg" width="170" height="170"/>
-💜 [fusang.cibr.ac.cn](fusang.cibr.ac.cn/) 💜
+# Fusang (扶桑)
+
+<img align="right" src="https://github.com/yanlinlin82/Fusang/blob/main/logo.jpg" width="170" height="170"/>
+
+- Forked from: [Jerry-0591/Fusang](https://github.com/Jerry-0591/Fusang)
+- Official website: <https://fusang.cibr.ac.cn/>
 
 Fusang is a framework used for the reconstruction of phylogenetic tree via deep learning methods. For current version, it supports the reconstruction of MSA with 4-40 taxas and the length of it should be less than 10,000.
 
@@ -11,9 +15,7 @@ The limit usage of memory is ~24GB for current repository, for most cases, the m
 
 ## Software requirements
 
-The configuration of the environment see **Environment_setting.md** of this repository
-
-Or simply run the following commands:
+Run the following commands:
 
 ```sh
 # install uv if required
@@ -22,6 +24,8 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 # use uv to install all dependencies
 uv sync
 ```
+
+or see [Environment_setting.md](Environment_setting.md) for details
 
 ## Example of usage
 
@@ -91,8 +95,8 @@ You can set the parameters as follows for specific scenario
 
 ## References
 
-Zou Z, Zhang H, Guan Y, Zhang JJMB, Evolution. 2020. Deep residual neural networks resolve quartet molecular phylogenies.  37:1495-1507.
+- Zou Z, Zhang H, Guan Y, Zhang JJMB, Evolution. 2020. Deep residual neural networks resolve quartet molecular phylogenies.  37:1495-1507.
 
-Suvorov A, Hochuli J, Schrider DRJSB. 2019. Accurate Inference of Tree Topologies from Multiple Sequence Alignments Using Deep Learning.  69:221-233.
+- Suvorov A, Hochuli J, Schrider DRJSB. 2019. Accurate Inference of Tree Topologies from Multiple Sequence Alignments Using Deep Learning.  69:221-233.
 
-https://github.com/martin-sicho/PTreeGenerator/blob/c6eddaf613a0058959b2f077458fad6fe689241e/src/ptreegen/parsimony.py
+- https://github.com/martin-sicho/PTreeGenerator/blob/c6eddaf613a0058959b2f077458fad6fe689241e/src/ptreegen/parsimony.py

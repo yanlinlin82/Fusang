@@ -719,11 +719,11 @@ def load_dl_model(len_of_msa, sequence_type, branch_model):
         model_num = '2'
         window_size = 1200
 
-    # Build and load model path: dl_model/{len_dir}/{S|C|N}{1|2}{G|U}/best_weights_clas.h5
+    # Build and load model path: model/{S|C|N}{1|2}{G|U}.h5
     seq_prefix = seq_type_map.get(sequence_type, 'S')
     branch_suffix = branch_model_map.get(branch_model, 'G')
-    model_dir = f'{seq_prefix}{model_num}{branch_suffix}'
-    model_path = os.path.join(script_dir, 'dl_model', len_dir, model_dir, 'best_weights_clas.h5')
+    model_filename = f'{seq_prefix}{model_num}{branch_suffix}.h5'
+    model_path = os.path.join(script_dir, 'model', model_filename)
     dl_model.load_weights(filepath=model_path)
 
     return dl_model, window_size

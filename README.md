@@ -110,42 +110,40 @@ After selecting the architecture, Fusang loads the appropriate pre-trained weigh
 
 #### Model Path Structure
 
-The selected model weights are loaded from:
+The selected model weights are loaded from the `model/` directory with a flat structure:
 
 ```txt
-dl_model/
-  ├── len_240/          (for MSA ≤ 1210 bp)
-  │   ├── S1G/         (standard, model 1, gamma)
-  │   ├── S1U/         (standard, model 1, uniform)
-  │   ├── C1G/         (coding, model 1, gamma)
-  │   ├── C1U/         (coding, model 1, uniform)
-  │   ├── N1G/         (noncoding, model 1, gamma)
-  │   └── N1U/         (noncoding, model 1, uniform)
-  └── len_1200/         (for MSA > 1210 bp)
-      ├── S2G/         (standard, model 2, gamma)
-      ├── S2U/         (standard, model 2, uniform)
-      ├── C2G/         (coding, model 2, gamma)
-      ├── C2U/         (coding, model 2, uniform)
-      ├── N2G/         (noncoding, model 2, gamma)
-      └── N2U/         (noncoding, model 2, uniform)
+model/
+  ├── S1G.h5          (standard, model 1, gamma) - for MSA ≤ 1210 bp
+  ├── S1U.h5          (standard, model 1, uniform) - for MSA ≤ 1210 bp
+  ├── C1G.h5          (coding, model 1, gamma) - for MSA ≤ 1210 bp
+  ├── C1U.h5          (coding, model 1, uniform) - for MSA ≤ 1210 bp
+  ├── N1G.h5          (noncoding, model 1, gamma) - for MSA ≤ 1210 bp
+  ├── N1U.h5          (noncoding, model 1, uniform) - for MSA ≤ 1210 bp
+  ├── S2G.h5          (standard, model 2, gamma) - for MSA > 1210 bp
+  ├── S2U.h5          (standard, model 2, uniform) - for MSA > 1210 bp
+  ├── C2G.h5          (coding, model 2, gamma) - for MSA > 1210 bp
+  ├── C2U.h5          (coding, model 2, uniform) - for MSA > 1210 bp
+  ├── N2G.h5          (noncoding, model 2, gamma) - for MSA > 1210 bp
+  └── N2U.h5          (noncoding, model 2, uniform) - for MSA > 1210 bp
 ```
 
-Each directory contains `best_weights_clas.h5` with the pre-trained weights.
+Each `.h5` file contains the pre-trained weights for the corresponding model configuration.
 
 #### Examples
 
 ```sh
 # Default: standard sequence type, gamma branch model
-# For MSA ≤ 1210 bp: loads dl_model/len_240/S1G/best_weights_clas.h5
-# For MSA > 1210 bp: loads dl_model/len_1200/S2G/best_weights_clas.h5
+# For MSA ≤ 1210 bp: loads model/S1G.h5
+# For MSA > 1210 bp: loads model/S2G.h5
 uv run fusang.py -m input.fas -s output
 
 # Coding sequences with gamma branch model
-# For MSA ≤ 1210 bp: loads dl_model/len_240/C1G/best_weights_clas.h5
+# For MSA ≤ 1210 bp: loads model/C1G.h5
 uv run fusang.py -m input.fas -s output -t coding
 
 # Non-coding sequences with uniform branch model
-# For MSA > 1210 bp: loads dl_model/len_1200/N2U/best_weights_clas.h5
+# For MSA > 1210 bp: loads model/N2U.h5
 uv run fusang.py -m input.fas -s output -t noncoding -r uniform
 ```
 
@@ -159,7 +157,7 @@ uv run fusang.py -m input.fas -s output -t noncoding -r uniform
 
 ## Meaning of each file in this repository
 
-`dl_model` The directory that saves the model of deep learning
+`model` The directory that saves the pre-trained model weights (`.h5` files) for deep learning
 
 `example_dl_output` The directory that saves the example of predicted tree
 

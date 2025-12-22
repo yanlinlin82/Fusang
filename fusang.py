@@ -683,6 +683,40 @@ def fill_dl_predict_2(window_number):
             start_idx += step
 
 
+def load_dl_model(len_of_msa, sequence_type, branch_model):
+    '''
+    Load deep learning model based on MSA length and parameters.
+    Returns the loaded model and window size (240 or 1200).
+    '''
+    # Get the directory where this script is located
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+
+    # Map parameters to model directory codes
+    seq_type_map = {'standard': 'S', 'coding': 'C', 'noncoding': 'N'}
+    branch_model_map = {'gamma': 'G', 'uniform': 'U'}
+
+    # Select model based on MSA length
+    if len_of_msa <= 1210:
+        dl_model = get_dl_model_240()
+        len_dir = 'len_240'
+        model_num = '1'
+        window_size = 240
+    else:
+        dl_model = get_dl_model_1200()
+        len_dir = 'len_1200'
+        model_num = '2'
+        window_size = 1200
+
+    # Build and load model path: dl_model/{len_dir}/{S|C|N}{1|2}{G|U}/best_weights_clas.h5
+    seq_prefix = seq_type_map.get(sequence_type, 'S')
+    branch_suffix = branch_model_map.get(branch_model, 'G')
+    model_dir = f'{seq_prefix}{model_num}{branch_suffix}'
+    model_path = os.path.join(script_dir, 'dl_model', len_dir, model_dir, 'best_weights_clas.h5')
+    dl_model.load_weights(filepath=model_path)
+
+    return dl_model, window_size
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser('get_msa_dir')
     p_input = parser.add_argument_group("INPUT")
@@ -766,39 +800,9 @@ if __name__ == '__main__':
 
     window_number = 1
 
-    if len_of_msa <= 1210:
-        dl_model = get_dl_model_240()
-        if sequence_type == 'standard' and branch_model == 'gamma':
-            dl_model.load_weights(filepath='./dl_model/len_240/S1G/best_weights_clas.h5')
-        if sequence_type == 'standard' and branch_model == 'uniform':
-            dl_model.load_weights(filepath='./dl_model/len_240/S1U/best_weights_clas.h5')
-        if sequence_type == 'coding' and branch_model == 'gamma':
-            dl_model.load_weights(filepath='./dl_model/len_240/C1G/best_weights_clas.h5')
-        if sequence_type == 'coding' and branch_model == 'uniform':
-            dl_model.load_weights(filepath='./dl_model/len_240/C1U/best_weights_clas.h5')
-        if sequence_type == 'noncoding' and branch_model == 'gamma':
-            dl_model.load_weights(filepath='./dl_model/len_240/N1G/best_weights_clas.h5')
-        if sequence_type == 'noncoding' and branch_model == 'uniform':
-            dl_model.load_weights(filepath='./dl_model/len_240/N1U/best_weights_clas.h5')
-
-        window_number = int(len_of_msa * float(window_coverage) // 240 + 1)
-
-    elif len_of_msa > 1210:
-        dl_model = get_dl_model_1200()
-        if sequence_type == 'standard' and branch_model == 'gamma':
-            dl_model.load_weights(filepath='./dl_model/len_1200/S2G/best_weights_clas.h5')
-        if sequence_type == 'standard' and branch_model == 'uniform':
-            dl_model.load_weights(filepath='./dl_model/len_1200/S2U/best_weights_clas.h5')
-        if sequence_type == 'coding' and branch_model == 'gamma':
-            dl_model.load_weights(filepath='./dl_model/len_1200/C2G/best_weights_clas.h5')
-        if sequence_type == 'coding' and branch_model == 'uniform':
-            dl_model.load_weights(filepath='./dl_model/len_1200/C2U/best_weights_clas.h5')
-        if sequence_type == 'noncoding' and branch_model == 'gamma':
-            dl_model.load_weights(filepath='./dl_model/len_1200/N2G/best_weights_clas.h5')
-        if sequence_type == 'noncoding' and branch_model == 'uniform':
-            dl_model.load_weights(filepath='./dl_model/len_1200/N2U/best_weights_clas.h5')
-
-        window_number = int(len_of_msa * float(window_coverage) // 1200 + 1)
+    # Load deep learning model based on MSA length and parameters
+    dl_model, window_size = load_dl_model(len_of_msa, sequence_type, branch_model)
+    window_number = int(len_of_msa * float(window_coverage) // window_size + 1)
 
 
     dl_predict = np.zeros((len(comb_of_id), 3))

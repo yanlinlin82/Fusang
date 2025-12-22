@@ -73,6 +73,90 @@ You can set the parameters as follows for specific scenario
 
 `-w, --window_coverage` The coverage of slide window, which decides the step of this algorithm. The default setting is 1
 
+---
+
+### 3. Model Selection
+
+Fusang automatically selects the appropriate deep learning model based on your MSA characteristics. The model selection process involves two steps:
+
+#### Step 1: Model Architecture Selection (Based on MSA Length)
+
+The program automatically chooses the model architecture based on the length of your MSA:
+
+- **Short sequences (≤ 1210 bp)**: Uses the 240-bp model architecture
+  - Input shape: 4 taxa × 240 positions × 1 channel
+  - Optimized for shorter alignments
+  - Uses smaller sliding windows (240 bp)
+
+- **Long sequences (> 1210 bp)**: Uses the 1200-bp model architecture
+  - Input shape: 4 taxa × 1200 positions × 1 channel
+  - Optimized for longer alignments
+  - Uses larger sliding windows (1200 bp)
+
+#### Step 2: Model Weight Selection (Based on Sequence Type and Branch Model)
+
+After selecting the architecture, Fusang loads the appropriate pre-trained weights based on two parameters:
+
+**Sequence Type (`-t, --sequence_type`):**
+
+- `standard` (default): General-purpose model for mixed or unknown sequence types
+- `coding`: Optimized for protein-coding sequences
+- `noncoding`: Optimized for non-coding sequences (e.g., intergenic regions, introns)
+
+**Branch Model (`-r, --branch_model`):**
+
+- `gamma` (default): Assumes branch lengths follow a gamma distribution (more realistic for most biological data)
+- `uniform`: Assumes uniform branch length distribution (simpler model)
+
+#### Model Path Structure
+
+The selected model weights are loaded from:
+
+```txt
+dl_model/
+  ├── len_240/          (for MSA ≤ 1210 bp)
+  │   ├── S1G/         (standard, model 1, gamma)
+  │   ├── S1U/         (standard, model 1, uniform)
+  │   ├── C1G/         (coding, model 1, gamma)
+  │   ├── C1U/         (coding, model 1, uniform)
+  │   ├── N1G/         (noncoding, model 1, gamma)
+  │   └── N1U/         (noncoding, model 1, uniform)
+  └── len_1200/         (for MSA > 1210 bp)
+      ├── S2G/         (standard, model 2, gamma)
+      ├── S2U/         (standard, model 2, uniform)
+      ├── C2G/         (coding, model 2, gamma)
+      ├── C2U/         (coding, model 2, uniform)
+      ├── N2G/         (noncoding, model 2, gamma)
+      └── N2U/         (noncoding, model 2, uniform)
+```
+
+Each directory contains `best_weights_clas.h5` with the pre-trained weights.
+
+#### Examples
+
+```sh
+# Default: standard sequence type, gamma branch model
+# For MSA ≤ 1210 bp: loads dl_model/len_240/S1G/best_weights_clas.h5
+# For MSA > 1210 bp: loads dl_model/len_1200/S2G/best_weights_clas.h5
+uv run fusang.py -m input.fas -s output
+
+# Coding sequences with gamma branch model
+# For MSA ≤ 1210 bp: loads dl_model/len_240/C1G/best_weights_clas.h5
+uv run fusang.py -m input.fas -s output -t coding
+
+# Non-coding sequences with uniform branch model
+# For MSA > 1210 bp: loads dl_model/len_1200/N2U/best_weights_clas.h5
+uv run fusang.py -m input.fas -s output -t noncoding -r uniform
+```
+
+#### Recommendation
+
+- Use `-t coding` if your MSA contains protein-coding sequences (CDS regions)
+- Use `-t noncoding` if your MSA contains non-coding sequences (introns, intergenic regions, UTRs)
+- Use `-t standard` (default) for mixed sequences or when uncertain
+- Use `-r gamma` (default) for most biological datasets
+- Use `-r uniform` only if you have specific reasons to assume uniform branch lengths
+
 ## Meaning of each file in this repository
 
 `dl_model` The directory that saves the model of deep learning

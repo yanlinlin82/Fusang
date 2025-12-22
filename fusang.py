@@ -738,10 +738,10 @@ if __name__ == '__main__':
     p_input.add_argument("-i", "--input", action="store", type=str, required=False, help="Input MSA file (alias for -m/--msa_dir)")
     p_input.add_argument("-s", "--save_prefix", action="store", type=str, required=False, default=None, help="Prefix of output file (output will be in Newick format)")
     p_input.add_argument("-o", "--output", action="store", type=str, required=False, default=None, help="Output file path (output will be in Newick format)")
-    p_input.add_argument("-b", "--beam_size", action="store", type=str, default='1', required=False)
-    p_input.add_argument("-t", "--sequence_type", action="store", type=str, default='standard', required=False)
-    p_input.add_argument("-r", "--branch_model", action="store", type=str, default='gamma', required=False)
-    p_input.add_argument("-w", "--window_coverage", action="store", type=str, default='1', required=False)
+    p_input.add_argument("-b", "--beam_size", action="store", type=str, default='1', required=False, help="Beam search size (default: 1)")
+    p_input.add_argument("-t", "--sequence_type", action="store", type=str, default='standard', required=False, help="Sequence type for model selection: standard (default), coding, or noncoding")
+    p_input.add_argument("-r", "--branch_model", action="store", type=str, default='gamma', required=False, help="Branch length model for model selection: gamma (default) or uniform")
+    p_input.add_argument("-w", "--window_coverage", action="store", type=str, default='1', required=False, help="Sliding window coverage factor (default: 1)")
 
     args = parser.parse_args()
     

@@ -3,7 +3,7 @@
 
 Fusang is a framework used for the reconstruction of phylogenetic tree via deep learning methods. For current version, it supports the reconstruction of MSA with 4-40 taxas and the length of it should be less than 10,000.
 
-## Hardware requirements 
+## Hardware requirements
 
 This repository can be run on both CPU and GPU environment, but we recommend users use GPU for accelerating. More details can be seen from Environment_setting.md
 
@@ -13,19 +13,29 @@ The limit usage of memory is ~24GB for current repository, for most cases, the m
 
 The configuration of the environment see **Environment_setting.md** of this repository
 
+Or simply run the following commands:
+
+```sh
+# install uv if required
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# use uv to install all dependencies
+uv sync
+```
+
 ## Example of usage
 
 ### 1. Quick start
 
 You can run Fusang using default parameter setting through the command as follows:
 
-```
-python fusang.py --msa_dir /path/to/your_msa.fas --save_prefix your_prefix
+```sh
+uv run fusang.py --msa_dir /path/to/your_msa.fas --save_prefix your_prefix
 ```
 
 An example of command as follows:
 
-```
+```sh
 python fusang.py --msa_dir ./example_msa/msa1.fas --save_prefix dl_output_1
 ```
 
@@ -37,9 +47,10 @@ The meaning of these two mandatory parameter:
 
 `--save_prefix`  The prefix of output file, the predicted tree will be saved on the directory of `dl_output` , with the prefix that set in this parameter. You can see `example_dl_output` to find the example of predicted tree.
 
---------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+---
 
 ### 2. Parameter setting
+
 `--msa_dir` The path of your msa file
 
 `--save_prefix` The prefix of the result file
@@ -53,10 +64,6 @@ You can set the parameters as follows for specific scenario
 `--branch_model` The distribution type of the branches, which has gamma (default) and uniform as choices
 
 `--window coverage` The coverage of slide window, which decides the step of this algorithm. The default setting is 1
-
-
-
-
 
 ## Meaning of each file in this repository
 
@@ -74,7 +81,7 @@ You can set the parameters as follows for specific scenario
 
 `Experimental phylogeny.zip` This file contains the data of experimental phylogeny experiments
 
-`example_command.sh` This command will generate the prdicted tree (in `example_dl_output` ) of input msa file (in `example_msa` ) 
+`example_command.sh` This command will generate the prdicted tree (in `example_dl_output` ) of input msa file (in `example_msa` )
 
 `fusang.py` The code for tree reconstruction
 
@@ -89,5 +96,3 @@ Zou Z, Zhang H, Guan Y, Zhang JJMB, Evolution. 2020. Deep residual neural networ
 Suvorov A, Hochuli J, Schrider DRJSB. 2019. Accurate Inference of Tree Topologies from Multiple Sequence Alignments Using Deep Learning.  69:221-233.
 
 https://github.com/martin-sicho/PTreeGenerator/blob/c6eddaf613a0058959b2f077458fad6fe689241e/src/ptreegen/parsimony.py
-
-

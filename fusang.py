@@ -769,34 +769,34 @@ if __name__ == '__main__':
     if len_of_msa <= 1210:
         dl_model = get_dl_model_240()
         if sequence_type == 'standard' and branch_model == 'gamma':
-            dl_model.load_weights(filepath='./dl_model/len_240/S1G/best_weights_clas').expect_partial()
+            dl_model.load_weights(filepath='./dl_model/len_240/S1G/best_weights_clas.h5')
         if sequence_type == 'standard' and branch_model == 'uniform':
-            dl_model.load_weights(filepath='./dl_model/len_240/S1U/best_weights_clas').expect_partial()
+            dl_model.load_weights(filepath='./dl_model/len_240/S1U/best_weights_clas.h5')
         if sequence_type == 'coding' and branch_model == 'gamma':
-            dl_model.load_weights(filepath='./dl_model/len_240/C1G/best_weights_clas').expect_partial()
+            dl_model.load_weights(filepath='./dl_model/len_240/C1G/best_weights_clas.h5')
         if sequence_type == 'coding' and branch_model == 'uniform':
-            dl_model.load_weights(filepath='./dl_model/len_240/C1U/best_weights_clas').expect_partial()
+            dl_model.load_weights(filepath='./dl_model/len_240/C1U/best_weights_clas.h5')
         if sequence_type == 'noncoding' and branch_model == 'gamma':
-            dl_model.load_weights(filepath='./dl_model/len_240/N1G/best_weights_clas').expect_partial()
+            dl_model.load_weights(filepath='./dl_model/len_240/N1G/best_weights_clas.h5')
         if sequence_type == 'noncoding' and branch_model == 'uniform':
-            dl_model.load_weights(filepath='./dl_model/len_240/N1U/best_weights_clas').expect_partial()
+            dl_model.load_weights(filepath='./dl_model/len_240/N1U/best_weights_clas.h5')
 
         window_number = int(len_of_msa * float(window_coverage) // 240 + 1) 
 
     elif len_of_msa > 1210:
         dl_model = get_dl_model_1200()
         if sequence_type == 'standard' and branch_model == 'gamma':
-            dl_model.load_weights(filepath='./dl_model/len_1200/S2G/best_weights_clas').expect_partial()
+            dl_model.load_weights(filepath='./dl_model/len_1200/S2G/best_weights_clas.h5')
         if sequence_type == 'standard' and branch_model == 'uniform':
-            dl_model.load_weights(filepath='./dl_model/len_1200/S2U/best_weights_clas').expect_partial()
+            dl_model.load_weights(filepath='./dl_model/len_1200/S2U/best_weights_clas.h5')
         if sequence_type == 'coding' and branch_model == 'gamma':
-            dl_model.load_weights(filepath='./dl_model/len_1200/C2G/best_weights_clas').expect_partial()
+            dl_model.load_weights(filepath='./dl_model/len_1200/C2G/best_weights_clas.h5')
         if sequence_type == 'coding' and branch_model == 'uniform':
-            dl_model.load_weights(filepath='./dl_model/len_1200/C2U/best_weights_clas').expect_partial()
+            dl_model.load_weights(filepath='./dl_model/len_1200/C2U/best_weights_clas.h5')
         if sequence_type == 'noncoding' and branch_model == 'gamma':
-            dl_model.load_weights(filepath='./dl_model/len_1200/N2G/best_weights_clas').expect_partial()
+            dl_model.load_weights(filepath='./dl_model/len_1200/N2G/best_weights_clas.h5')
         if sequence_type == 'noncoding' and branch_model == 'uniform':
-            dl_model.load_weights(filepath='./dl_model/len_1200/N2U/best_weights_clas').expect_partial()
+            dl_model.load_weights(filepath='./dl_model/len_1200/N2U/best_weights_clas.h5')
 
         window_number = int(len_of_msa * float(window_coverage) // 1200 + 1) 
 

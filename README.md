@@ -34,40 +34,44 @@ or see [Environment_setting.md](Environment_setting.md) for details
 You can run Fusang using default parameter setting through the command as follows:
 
 ```sh
-uv run fusang.py --msa_dir /path/to/your_msa.fas --save_prefix your_prefix
+uv run fusang.py -m /path/to/your_msa.fas -s your_prefix
 ```
 
 An example of command as follows:
 
 ```sh
-python fusang.py --msa_dir ./example_msa/msa1.fas --save_prefix dl_output_1
+python fusang.py -m ./example_msa/msa1.fas -s dl_output_1
 ```
 
-This command will do phylogenetic reconstruction of your MSA file, the result will be saved in file with the prefix that you set in `--save_prefix`
+This command will do phylogenetic reconstruction of your MSA file, the result will be saved in file with the prefix that you set in `--save_prefix` (or `-s`)
 
 The meaning of these two mandatory parameter:
 
-`--msa_dir` The path to MSA file,  for current version of Fusang, we support both fasta and phylip format of MSA. The example of current MSA format can be seen in the directory of `example_msa`
+`-m, --msa_dir` The path to MSA file, for current version of Fusang, we support both fasta and phylip format of MSA. The example of current MSA format can be seen in the directory of `example_msa`
 
-`--save_prefix`  The prefix of output file, the predicted tree will be saved on the directory of `dl_output` , with the prefix that set in this parameter. You can see `example_dl_output` to find the example of predicted tree.
+`-s, --save_prefix`  The prefix of output file, the predicted tree will be saved on the directory of `dl_output` , with the prefix that set in this parameter. You can see `example_dl_output` to find the example of predicted tree.
 
 ---
 
 ### 2. Parameter setting
 
-`--msa_dir` The path of your msa file
+**Required parameters:**
 
-`--save_prefix` The prefix of the result file
+`-m, --msa_dir` The path of your msa file
+
+`-s, --save_prefix` The prefix of the result file
+
+**Optional parameters:**
 
 You can set the parameters as follows for specific scenario
 
-`--beam_size` The size of beam in the beam search procedure, default beam size is 1
+`-b, --beam_size` The size of beam in the beam search procedure, default beam size is 1
 
-`--sequence_type` The type of the sequences in msa, which has three choices, coding, noncoding and standard (default, means both coding and noncoding)
+`-t, --sequence_type` The type of the sequences in msa, which has three choices, coding, noncoding and standard (default, means both coding and noncoding)
 
-`--branch_model` The distribution type of the branches, which has gamma (default) and uniform as choices
+`-r, --branch_model` The distribution type of the branches, which has gamma (default) and uniform as choices
 
-`--window coverage` The coverage of slide window, which decides the step of this algorithm. The default setting is 1
+`-w, --window_coverage` The coverage of slide window, which decides the step of this algorithm. The default setting is 1
 
 ## Meaning of each file in this repository
 

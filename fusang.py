@@ -733,11 +733,11 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser('get_msa_dir')
     p_input = parser.add_argument_group("INPUT")
     p_input.add_argument("msa_file", nargs='?', type=str, help="Input MSA file (positional argument)")
-    p_input.add_argument("output_file", nargs='?', type=str, help="Output file (positional argument)")
+    p_input.add_argument("output_file", nargs='?', type=str, help="Output file in Newick format (positional argument)")
     p_input.add_argument("-m", "--msa_dir", action="store", type=str, required=False, help="Input MSA file (alternative to positional argument)")
     p_input.add_argument("-i", "--input", action="store", type=str, required=False, help="Input MSA file (alias for -m/--msa_dir)")
-    p_input.add_argument("-s", "--save_prefix", action="store", type=str, required=False, default=None)
-    p_input.add_argument("-o", "--output", action="store", type=str, required=False, default=None)
+    p_input.add_argument("-s", "--save_prefix", action="store", type=str, required=False, default=None, help="Prefix of output file (output will be in Newick format)")
+    p_input.add_argument("-o", "--output", action="store", type=str, required=False, default=None, help="Output file path (output will be in Newick format)")
     p_input.add_argument("-b", "--beam_size", action="store", type=str, default='1', required=False)
     p_input.add_argument("-t", "--sequence_type", action="store", type=str, default='standard', required=False)
     p_input.add_argument("-r", "--branch_model", action="store", type=str, default='gamma', required=False)
@@ -853,10 +853,15 @@ if __name__ == '__main__':
     #np.save('./dl_predict.npy', dl_predict)
     #dl_predict = np.load('./dl_predict.npy')
 
+    # Generate phylogenetic tree in Newick format
     if taxa_num > 10:
         searched_tree = transform_str(gen_phylogenetic_tree_2(dl_predict, int(beam_size)), taxa_name)
     else:
         searched_tree = transform_str(gen_phylogenetic_tree(dl_predict, int(beam_size)), taxa_name)
+
+    # Ensure output ends with newline
+    if not searched_tree.endswith('\n'):
+        searched_tree += '\n'
 
     # Determine output destination
     if output_path is not None:

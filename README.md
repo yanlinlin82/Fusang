@@ -43,13 +43,13 @@ An example of command as follows:
 python fusang.py -m ./example_msa/msa1.fas -s dl_output_1
 ```
 
-This command will do phylogenetic reconstruction of your MSA file, the result will be saved in file with the prefix that you set in `--save_prefix` (or `-s`)
+This command will do phylogenetic reconstruction of your MSA file, the result will be saved in file with the prefix that you set in `--save_prefix` (or `-s`). The output is a phylogenetic tree in Newick format.
 
 The meaning of these two mandatory parameter:
 
 `-m, --msa_dir` The path to MSA file, for current version of Fusang, we support both fasta and phylip format of MSA. The example of current MSA format can be seen in the directory of `example_msa`
 
-`-s, --save_prefix`  The prefix of output file, the predicted tree will be saved on the directory of `dl_output` , with the prefix that set in this parameter. You can see `example_dl_output` to find the example of predicted tree.
+`-s, --save_prefix`  The prefix of output file, the predicted tree will be saved on the directory of `dl_output` , with the prefix that set in this parameter. The output file contains a phylogenetic tree in Newick format. You can see `example_dl_output` to find the example of predicted tree.
 
 ---
 

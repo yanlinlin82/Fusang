@@ -2,6 +2,7 @@ import os
 import re
 import sys
 import warnings
+from io import StringIO
 
 # Suppress TensorFlow and NumPy warnings
 os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
@@ -469,8 +470,19 @@ def get_numpy(aln_file):
     '''
     current version only supports the total length of msa less than 10K
     '''
-    aln = open(aln_file)
-    dic = {'A':'0','T':'1','C':'2','G':'3','-':'4', 'N':'4'}
+    # Handle both file paths and file-like objects (e.g., StringIO)
+    if isinstance(aln_file, str):
+        # Use context manager for automatic file closing
+        with open(aln_file) as aln:
+            return _process_alignment(aln)
+    else:
+        # File-like object (e.g., StringIO), no need to close
+        return _process_alignment(aln_file)
+
+
+def _process_alignment(aln):
+    '''Process alignment file-like object and return numpy array'''
+    dic = {'A':'0', 'T':'1', 'C':'2', 'G':'3', '-':'4', 'N':'4'}
 
     # for masking other unknown bases
     other_base = ['R', 'Y', 'K', 'M', 'U', 'S', 'W', 'B', 'D', 'H', 'V', 'X']
@@ -720,15 +732,37 @@ def load_dl_model(len_of_msa, sequence_type, branch_model):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser('get_msa_dir')
     p_input = parser.add_argument_group("INPUT")
-    p_input.add_argument("-m", "--msa_dir", action="store", type=str, required=True)
-    p_input.add_argument("-s", "--save_prefix", action="store", type=str, required=True)
+    p_input.add_argument("msa_file", nargs='?', type=str, help="Input MSA file (positional argument)")
+    p_input.add_argument("output_file", nargs='?', type=str, help="Output file (positional argument)")
+    p_input.add_argument("-m", "--msa_dir", action="store", type=str, required=False, help="Input MSA file (alternative to positional argument)")
+    p_input.add_argument("-i", "--input", action="store", type=str, required=False, help="Input MSA file (alias for -m/--msa_dir)")
+    p_input.add_argument("-s", "--save_prefix", action="store", type=str, required=False, default=None)
+    p_input.add_argument("-o", "--output", action="store", type=str, required=False, default=None)
     p_input.add_argument("-b", "--beam_size", action="store", type=str, default='1', required=False)
     p_input.add_argument("-t", "--sequence_type", action="store", type=str, default='standard', required=False)
     p_input.add_argument("-r", "--branch_model", action="store", type=str, default='gamma', required=False)
     p_input.add_argument("-w", "--window_coverage", action="store", type=str, default='1', required=False)
 
     args = parser.parse_args()
-    msa_dir = args.msa_dir
+    
+    # Determine MSA file: use -m/--msa_dir or -i/--input if provided, otherwise use positional argument
+    if args.msa_dir is not None:
+        msa_dir = args.msa_dir
+    elif args.input is not None:
+        msa_dir = args.input
+    elif args.msa_file is not None:
+        msa_dir = args.msa_file
+    else:
+        parser.error("MSA file must be provided either as positional argument or with -m/--msa_dir or -i/--input")
+    
+    # Determine output path: use -o/--output if provided, otherwise use positional output argument
+    if args.output is not None:
+        output_path = args.output
+    elif args.output_file is not None:
+        output_path = args.output_file
+    else:
+        output_path = None
+    
     save_prefix = args.save_prefix
     beam_size = args.beam_size
     sequence_type = args.sequence_type
@@ -751,12 +785,13 @@ if __name__ == '__main__':
                 len_of_msa = len(alignment[0].seq)
                 taxa_num = len(alignment)
 
-                save_alignment = save_prefix + '_fusang.fas'
-                with open(save_alignment,'w') as f:
-                    for record in alignment:
-                        taxa_name[len(taxa_name)] = record.id
-                        f.write('>'+str(len(taxa_name)-1)+'\n')
-                        f.write(str(record.seq)+'\n')
+                # Create in-memory file-like object instead of writing to disk
+                save_alignment = StringIO()
+                for record in alignment:
+                    taxa_name[len(taxa_name)] = record.id
+                    save_alignment.write('>'+str(len(taxa_name)-1)+'\n')
+                    save_alignment.write(str(record.seq)+'\n')
+                save_alignment.seek(0)  # Reset to beginning for reading
             except:
                 print('Something wrong about your msa file, please check your msa file')
             break
@@ -794,9 +829,7 @@ if __name__ == '__main__':
 
     internal_node_name_pool = ['internal_node_' + str(i) for i in range(3, 3000)]
 
-    fusang_msa_dir = save_prefix + '_fusang.fas'
-    org_seq = get_numpy(fusang_msa_dir)
-    os.remove(fusang_msa_dir)
+    org_seq = get_numpy(save_alignment)
 
     window_number = 1
 
@@ -820,14 +853,32 @@ if __name__ == '__main__':
     #np.save('./dl_predict.npy', dl_predict)
     #dl_predict = np.load('./dl_predict.npy')
 
-    if not os.path.exists('./dl_output/'):
-        os.mkdir('./dl_output/')
-
     if taxa_num > 10:
         searched_tree = transform_str(gen_phylogenetic_tree_2(dl_predict, int(beam_size)), taxa_name)
     else:
         searched_tree = transform_str(gen_phylogenetic_tree(dl_predict, int(beam_size)), taxa_name)
 
-    build_log = open('./dl_output/{}.txt'.format(save_prefix), 'a')
-    build_log.write(searched_tree)
-    build_log.close()
+    # Determine output destination
+    if output_path is not None:
+        # Use user-specified output path
+        output_file = output_path
+        # Create output directory if it doesn't exist
+        output_dir = os.path.dirname(output_file)
+        if output_dir:
+            os.makedirs(output_dir, exist_ok=True)
+        build_log = open(output_file, 'a')
+        build_log.write(searched_tree)
+        build_log.close()
+    elif save_prefix is not None:
+        # Default behavior: use dl_output directory with save_prefix
+        output_file = './dl_output/{}.txt'.format(save_prefix)
+        # Create output directory if it doesn't exist
+        output_dir = os.path.dirname(output_file)
+        if output_dir:
+            os.makedirs(output_dir, exist_ok=True)
+        build_log = open(output_file, 'a')
+        build_log.write(searched_tree)
+        build_log.close()
+    else:
+        # Default to stdout
+        print(searched_tree, end='')

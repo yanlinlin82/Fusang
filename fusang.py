@@ -3,21 +3,55 @@ import re
 import sys
 import warnings
 from io import StringIO
+import argparse
 
-# Suppress TensorFlow and NumPy warnings
+# Parse arguments early to set logging level before TensorFlow import
+_parser = argparse.ArgumentParser('get_msa_dir', add_help=False)
+_parser.add_argument('-q', '--quiet', action='store_true', help='Suppress warning messages')
+_parser.add_argument('-v', '--verbose', action='store_true', help='Show verbose output including stderr messages')
+_early_args, _ = _parser.parse_known_args()
+
+# Set TensorFlow and NumPy warning levels based on verbosity
 os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # Suppress INFO and WARNING messages
-warnings.filterwarnings('ignore', category=FutureWarning)
+# Store original stderr for restoration at end of execution (module-level variable)
+_quiet_original_stderr_global = None
+_quiet_stderr_fd = None
+_quiet_original_stderr_fd = None
+if _early_args.quiet:
+    os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # Suppress all messages including ERROR
+    warnings.filterwarnings('ignore')
+    # Redirect stderr at both Python and file descriptor level to catch all messages
+    _quiet_original_stderr_global = sys.stderr
+    sys.stderr = StringIO()
+    # Also redirect at file descriptor level to catch C++ messages
+    try:
+        _quiet_original_stderr_fd = os.dup(2)  # Save original stderr fd
+        _quiet_stderr_fd = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(_quiet_stderr_fd, 2)  # Redirect stderr fd to /dev/null
+    except (OSError, AttributeError):
+        # If file descriptor redirection fails, continue with Python-level redirection
+        _quiet_stderr_fd = None
+        _quiet_original_stderr_fd = None
+elif _early_args.verbose:
+    os.environ['TF_CPP_MIN_LOG_LEVEL'] = '0'  # Show all messages
+    warnings.filterwarnings('default')
+else:
+    os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # Suppress INFO and WARNING messages (default)
+    warnings.filterwarnings('ignore', category=FutureWarning)
 
 import numpy as np
 import functools
-import argparse
 from Bio import AlignIO
 from itertools import combinations
 
 import math
-import tensorflow as tf
-from keras import layers, models
+try:
+    import tensorflow as tf
+    from keras import layers, models
+finally:
+    # Don't restore stderr yet in quiet mode - keep it redirected throughout execution
+    # It will be restored at the end of main() execution
+    pass
 
 from ete3 import Tree
 
@@ -600,7 +634,7 @@ def get_dl_model_240():
     return model
 
 
-def fill_dl_predict_each_slide_window(len_idx_1, len_idx_2):
+def fill_dl_predict_each_slide_window(len_idx_1, len_idx_2, verbose=0):
     start_pos = 0
     iters = len(comb_of_id) // 50000
     for i in range(0, iters):
@@ -611,7 +645,7 @@ def fill_dl_predict_each_slide_window(len_idx_1, len_idx_2):
             batch_seq[j] = org_seq[0, idx[:], len_idx_1:len_idx_2]
 
         test_seq = tf.expand_dims(batch_seq.astype(np.float32), axis=-1)
-        predicted = dl_model.predict(x=test_seq)
+        predicted = dl_model.predict(x=test_seq, verbose=verbose)
 
         for j in range(0, len(batch_seq)):
             dl_predict[i*50000+j,:] += predicted[j,:]
@@ -627,14 +661,14 @@ def fill_dl_predict_each_slide_window(len_idx_1, len_idx_2):
         batch_seq[j] = org_seq[0, idx[:], len_idx_1:len_idx_2]
 
     test_seq = tf.expand_dims(batch_seq.astype(np.float32), axis=-1)
-    predicted = dl_model.predict(x=test_seq)
+    predicted = dl_model.predict(x=test_seq, verbose=verbose)
 
     for j in range(0, len(batch_seq)):
         dl_predict[iters*50000+j,:] += predicted[j,:]
     #dl_predict[iters*50000:iters*50000+len(batch_seq),:] += predicted[:,:]
 
 
-def fill_dl_predict_each_slide_window_2(len_idx_1, len_idx_2):
+def fill_dl_predict_each_slide_window_2(len_idx_1, len_idx_2, verbose=0):
     start_pos = 0
     iters = len(comb_of_id) // 50000
     for i in range(0, iters):
@@ -645,7 +679,7 @@ def fill_dl_predict_each_slide_window_2(len_idx_1, len_idx_2):
             batch_seq[j] = org_seq[0, idx[:], len_idx_1:len_idx_2]
 
         test_seq = tf.expand_dims(batch_seq.astype(np.float32), axis=-1)
-        predicted = dl_model.predict(x=test_seq)
+        predicted = dl_model.predict(x=test_seq, verbose=verbose)
 
         for j in range(0, len(batch_seq)):
             dl_predict[i*50000+j,:] += predicted[j,:]
@@ -661,29 +695,29 @@ def fill_dl_predict_each_slide_window_2(len_idx_1, len_idx_2):
         batch_seq[j] = org_seq[0, idx[:], len_idx_1:len_idx_2]
 
     test_seq = tf.expand_dims(batch_seq.astype(np.float32), axis=-1)
-    predicted = dl_model.predict(x=test_seq)
+    predicted = dl_model.predict(x=test_seq, verbose=verbose)
 
     for j in range(0, len(batch_seq)):
         dl_predict[iters*50000+j,:] += predicted[j,:]
     #dl_predict[iters*50000:iters*50000+len(batch_seq),:] += predicted[:,:]
 
 
-def fill_dl_predict(window_number):
+def fill_dl_predict(window_number, verbose=0):
     step = (len_of_msa - 1200) // window_number
     start_idx = 0
     for i in range(0, window_number):
         end_idx = start_idx + 1200
-        fill_dl_predict_each_slide_window(start_idx, end_idx)
+        fill_dl_predict_each_slide_window(start_idx, end_idx, verbose=verbose)
         start_idx += step
 
 
-def fill_dl_predict_2(window_number):
+def fill_dl_predict_2(window_number, verbose=0):
     if len_of_msa > 240:
         step = (len_of_msa - 240) // window_number
         start_idx = 0
         for i in range(0, window_number):
             end_idx = start_idx + 240
-            fill_dl_predict_each_slide_window_2(start_idx, end_idx)
+            fill_dl_predict_each_slide_window_2(start_idx, end_idx, verbose=verbose)
             start_idx += step
 
     else:
@@ -691,7 +725,7 @@ def fill_dl_predict_2(window_number):
         start_idx = 0
         for i in range(0, window_number):
             end_idx = start_idx + 240
-            fill_dl_predict_each_slide_window_2(start_idx, end_idx)
+            fill_dl_predict_each_slide_window_2(start_idx, end_idx, verbose=verbose)
             start_idx += step
 
 
@@ -742,8 +776,28 @@ if __name__ == '__main__':
     p_input.add_argument("-t", "--sequence_type", action="store", type=str, default='standard', required=False, help="Sequence type for model selection: standard (default), coding, or noncoding")
     p_input.add_argument("-r", "--branch_model", action="store", type=str, default='gamma', required=False, help="Branch length model for model selection: gamma (default) or uniform")
     p_input.add_argument("-w", "--window_coverage", action="store", type=str, default='1', required=False, help="Sliding window coverage factor (default: 1)")
+    p_input.add_argument("-q", "--quiet", action="store_true", help="Suppress warning messages")
+    p_input.add_argument("-v", "--verbose", action="store_true", help="Show verbose output including stderr messages")
 
     args = parser.parse_args()
+    
+    # Validate that quiet and verbose are not both specified
+    if args.quiet and args.verbose:
+        parser.error("Cannot specify both -q/--quiet and -v/--verbose")
+    
+    # In quiet mode, stderr should already be redirected from early parsing
+    # Store reference for restoration at end
+    if args.quiet:
+        _quiet_original_stderr = _quiet_original_stderr_global
+    
+    # Determine verbosity level for model.predict() calls
+    # 0 = silent, 1 = progress bar, 2 = one line per epoch (not used for predict)
+    if args.quiet:
+        predict_verbose = 0  # Suppress progress bars in quiet mode
+    elif args.verbose:
+        predict_verbose = 1  # Show progress bars in verbose mode
+    else:
+        predict_verbose = 1  # Default: show progress bars (warnings still suppressed via TF_CPP_MIN_LOG_LEVEL)
     
     # Determine MSA file: use -m/--msa_dir or -i/--input if provided, otherwise use positional argument
     if args.msa_dir is not None:
@@ -769,121 +823,135 @@ if __name__ == '__main__':
     branch_model = args.branch_model
     window_coverage = args.window_coverage
 
-    flag = 0
-    support_format = ['.fas', '.phy', '.fasta', 'phylip']
-    bio_format = ['fasta', 'phylip', 'fasta', 'phylip']
+    try:
+        flag = 0
+        support_format = ['.fas', '.phy', '.fasta', 'phylip']
+        bio_format = ['fasta', 'phylip', 'fasta', 'phylip']
 
-    taxa_name = {}
+        taxa_name = {}
 
-    for i in range(0, len(support_format)):
-        ele = support_format[i]
-        if msa_dir.endswith(ele):
-            flag = 1
-            try:
-                alignment = AlignIO.read(open(msa_dir), bio_format[i])
+        for i in range(0, len(support_format)):
+            ele = support_format[i]
+            if msa_dir.endswith(ele):
+                flag = 1
+                try:
+                    alignment = AlignIO.read(open(msa_dir), bio_format[i])
 
-                len_of_msa = len(alignment[0].seq)
-                taxa_num = len(alignment)
+                    len_of_msa = len(alignment[0].seq)
+                    taxa_num = len(alignment)
 
-                # Create in-memory file-like object instead of writing to disk
-                save_alignment = StringIO()
-                for record in alignment:
-                    taxa_name[len(taxa_name)] = record.id
-                    save_alignment.write('>'+str(len(taxa_name)-1)+'\n')
-                    save_alignment.write(str(record.seq)+'\n')
-                save_alignment.seek(0)  # Reset to beginning for reading
-            except:
-                print('Something wrong about your msa file, please check your msa file')
-            break
+                    # Create in-memory file-like object instead of writing to disk
+                    save_alignment = StringIO()
+                    for record in alignment:
+                        taxa_name[len(taxa_name)] = record.id
+                        save_alignment.write('>'+str(len(taxa_name)-1)+'\n')
+                        save_alignment.write(str(record.seq)+'\n')
+                    save_alignment.seek(0)  # Reset to beginning for reading
+                except:
+                    print('Something wrong about your msa file, please check your msa file')
+                break
 
-    if flag == 0:
-        print('we do not support this format of msa')
-        sys.exit(1)
+        if flag == 0:
+            print('we do not support this format of msa')
+            sys.exit(1)
 
-    #logging.warning(taxa_num)
+        #logging.warning(taxa_num)
 
-    start_end_list = [None, None, None]
+        start_end_list = [None, None, None]
 
-    end = -1
-    for i in range(3, 100):
-        start = end + 1
-        end = start + int(comb_math(i,3)) - 1
-        start_end_list.append((start,end))
+        end = -1
+        for i in range(3, 100):
+            start = end + 1
+            end = start + int(comb_math(i,3)) - 1
+            start_end_list.append((start,end))
 
-    id_for_taxa = [i for i in range(0, taxa_num)]
-    comb_of_id = list(combinations(id_for_taxa, 4))
-    comb_of_id.sort(key=lambda ele: ele[-1])
+        id_for_taxa = [i for i in range(0, taxa_num)]
+        comb_of_id = list(combinations(id_for_taxa, 4))
+        comb_of_id.sort(key=lambda ele: ele[-1])
 
-    leave_node_id = [i for i in range(0, taxa_num)]
-    leave_node_name = [chr(ord(u'\u4e00')+i) for i in range(0, taxa_num)]
-    leave_node_comb_id = comb_of_id
+        leave_node_id = [i for i in range(0, taxa_num)]
+        leave_node_name = [chr(ord(u'\u4e00')+i) for i in range(0, taxa_num)]
+        leave_node_comb_id = comb_of_id
 
-    leave_node_comb_name = []
+        leave_node_comb_name = []
 
-    dic_for_leave_node_comb_name = {}
+        dic_for_leave_node_comb_name = {}
 
-    for ele in leave_node_comb_id:
-        term = [chr(ord(u'\u4e00')+id) for id in ele]
-        dic_for_leave_node_comb_name["".join(term)] = len(dic_for_leave_node_comb_name)
-        leave_node_comb_name.append("".join(term))
+        for ele in leave_node_comb_id:
+            term = [chr(ord(u'\u4e00')+id) for id in ele]
+            dic_for_leave_node_comb_name["".join(term)] = len(dic_for_leave_node_comb_name)
+            leave_node_comb_name.append("".join(term))
 
-    internal_node_name_pool = ['internal_node_' + str(i) for i in range(3, 3000)]
+        internal_node_name_pool = ['internal_node_' + str(i) for i in range(3, 3000)]
 
-    org_seq = get_numpy(save_alignment)
+        org_seq = get_numpy(save_alignment)
 
-    window_number = 1
+        window_number = 1
 
-    # Load deep learning model based on MSA length and parameters
-    dl_model, window_size = load_dl_model(len_of_msa, sequence_type, branch_model)
-    window_number = int(len_of_msa * float(window_coverage) // window_size + 1)
+        # Load deep learning model based on MSA length and parameters
+        dl_model, window_size = load_dl_model(len_of_msa, sequence_type, branch_model)
+        window_number = int(len_of_msa * float(window_coverage) // window_size + 1)
 
 
-    dl_predict = np.zeros((len(comb_of_id), 3))
+        dl_predict = np.zeros((len(comb_of_id), 3))
 
-    if len_of_msa > 1210:
-        fill_dl_predict(window_number)
-    elif len_of_msa <= 1210:
-        fill_dl_predict_2(window_number)
-    else:
-        print('current version of fusang do not support this length of MSA')
-        sys.exit(1)
+        if len_of_msa > 1210:
+            fill_dl_predict(window_number, verbose=predict_verbose)
+        elif len_of_msa <= 1210:
+            fill_dl_predict_2(window_number, verbose=predict_verbose)
+        else:
+            print('current version of fusang do not support this length of MSA')
+            sys.exit(1)
 
-    dl_predict /= window_number
+        dl_predict /= window_number
 
-    #np.save('./dl_predict.npy', dl_predict)
-    #dl_predict = np.load('./dl_predict.npy')
+        #np.save('./dl_predict.npy', dl_predict)
+        #dl_predict = np.load('./dl_predict.npy')
 
-    # Generate phylogenetic tree in Newick format
-    if taxa_num > 10:
-        searched_tree = transform_str(gen_phylogenetic_tree_2(dl_predict, int(beam_size)), taxa_name)
-    else:
-        searched_tree = transform_str(gen_phylogenetic_tree(dl_predict, int(beam_size)), taxa_name)
+        # Generate phylogenetic tree in Newick format
+        if taxa_num > 10:
+            searched_tree = transform_str(gen_phylogenetic_tree_2(dl_predict, int(beam_size)), taxa_name)
+        else:
+            searched_tree = transform_str(gen_phylogenetic_tree(dl_predict, int(beam_size)), taxa_name)
 
-    # Ensure output ends with newline
-    if not searched_tree.endswith('\n'):
-        searched_tree += '\n'
+        # Ensure output ends with newline
+        if not searched_tree.endswith('\n'):
+            searched_tree += '\n'
 
-    # Determine output destination
-    if output_path is not None:
-        # Use user-specified output path
-        output_file = output_path
-        # Create output directory if it doesn't exist
-        output_dir = os.path.dirname(output_file)
-        if output_dir:
-            os.makedirs(output_dir, exist_ok=True)
-        build_log = open(output_file, 'a')
-        build_log.write(searched_tree)
-        build_log.close()
-    elif save_prefix is not None:
-        # Default behavior: use dl_output directory with save_prefix
-        output_file = './dl_output/{}.txt'.format(save_prefix)
-        # Create output directory if it doesn't exist
-        output_dir = os.path.dirname(output_file)
-        if output_dir:
-            os.makedirs(output_dir, exist_ok=True)
-        build_log = open(output_file, 'a')
-        build_log.write(searched_tree)
-        build_log.close()
-    else:
-        # Default to stdout
-        print(searched_tree, end='')
+        # Determine output destination
+        if output_path is not None:
+            # Use user-specified output path
+            output_file = output_path
+            # Create output directory if it doesn't exist
+            output_dir = os.path.dirname(output_file)
+            if output_dir:
+                os.makedirs(output_dir, exist_ok=True)
+            build_log = open(output_file, 'a')
+            build_log.write(searched_tree)
+            build_log.close()
+        elif save_prefix is not None:
+            # Default behavior: use dl_output directory with save_prefix
+            output_file = './dl_output/{}.txt'.format(save_prefix)
+            # Create output directory if it doesn't exist
+            output_dir = os.path.dirname(output_file)
+            if output_dir:
+                os.makedirs(output_dir, exist_ok=True)
+            build_log = open(output_file, 'a')
+            build_log.write(searched_tree)
+            build_log.close()
+        else:
+            # Default to stdout
+            print(searched_tree, end='')
+    finally:
+        # Restore stderr if it was redirected in quiet mode
+        if args.quiet:
+            sys.stderr = _quiet_original_stderr
+            # Restore file descriptor level redirection
+            if _quiet_original_stderr_fd is not None:
+                try:
+                    os.dup2(_quiet_original_stderr_fd, 2)
+                    os.close(_quiet_original_stderr_fd)
+                    if _quiet_stderr_fd is not None:
+                        os.close(_quiet_stderr_fd)
+                except (OSError, AttributeError):
+                    pass

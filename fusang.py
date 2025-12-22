@@ -15,22 +15,16 @@ from Bio import AlignIO
 from itertools import combinations
 
 import math
-import random
-import pandas as pd
 import tensorflow as tf
-from tensorflow.keras import layers, models, Sequential, regularizers
+from keras import layers, models
 
 from ete3 import Tree
-from pandas.core.frame import DataFrame
 
 global org_seq, comb_of_id, dl_model, dl_predict, len_of_msa, dic_for_leave_node_comb_name, start_end_list
 global taxa_num, leave_node_id, leave_node_name, leave_node_comb_id, leave_node_comb_name, internal_node_name_pool
 
-from multiprocessing import Process, Pool
+from multiprocessing import Pool
 import multiprocessing
-
-#import logging
-#logging.basicConfig(level = logging.INFO, filename='new.log', filemode='a')
 
 
 def comb_math(n,m):
@@ -85,22 +79,22 @@ def get_current_topology_id(quart_key, cluster_1, cluster_2):
 
 def judge_tree_score(tree, quart_distribution, new_addition_taxa, dic_for_leave_node_comb_name):
     '''
-        parameter 
-        tree: a candidate tree, can be any taxas
-        quart_distribution: the prob distribution of the topology of every 4-taxa
+    parameter
+    tree: a candidate tree, can be any taxas
+    quart_distribution: the prob distribution of the topology of every 4-taxa
     '''
     crt_tree = tree.copy("newick")
     leaves = crt_tree.get_leaves()
-    
+
     leaves = [ele.name for ele in leaves]
     total_quarts = list(combinations(leaves, 4))
     quarts = []
     for ele in total_quarts:
         if new_addition_taxa in ele:
             quarts.append(ele)
-    
+
     total_quart_score = 0
-    
+
     for quart in quarts:
         crt_tree = tree.copy("newick")
         try:
@@ -109,27 +103,27 @@ def judge_tree_score(tree, quart_distribution, new_addition_taxa, dic_for_leave_
             print('Error of pruning 4 taxa from current tree, the current tree is:')
             print(crt_tree)
             sys.exit(0)
-        
+
         quart_key = "".join(sorted(list(quart)))
         #quart_topo_id = leave_node_comb_name.index(quart_key)
 
         quart_topo_id = dic_for_leave_node_comb_name[quart_key]
 
         quart_topo_distribution = quart_distribution[quart_topo_id]
-        
+
         # judge current tree belongs to which topology
         tmp = re.findall(r"\([\s\S]\,[\s\S]\)", crt_tree.write(format=9))[0]
         topology_id = get_current_topology_id(quart_key, tmp[1], tmp[3])
-        
+
         total_quart_score += np.log(quart_topo_distribution[topology_id]+1e-200)
-    
+
     return total_quart_score
 
 
 def get_modify_tree(tmp_tree, edge_0, edge_1, new_add_node_name):
     '''
-        add a new leave node between edge_0 and edge_1
-        default: edge_0 is the parent node of edge_1
+    add a new leave node between edge_0 and edge_1
+    default: edge_0 is the parent node of edge_1
     '''
     modify_tree = tmp_tree.copy("newick")
     if edge_0 != edge_1:
@@ -143,7 +137,7 @@ def get_modify_tree(tmp_tree, edge_0, edge_1, new_add_node_name):
 
     else:
         modify_tree.add_child(name=new_add_node_name)
-        
+
     return modify_tree
 
 
@@ -160,38 +154,38 @@ def search_this_branch(tmp_tree, edge_0, edge_1, current_quartets, current_leave
 
 
 def select_mask_node_pair(dl_predict, new_add_taxa):
-    
+
     if new_add_taxa <= 9:
         return None
 
     mask_node_pair = []
-    
+
     current_start = start_end_list[new_add_taxa][0]
     current_end = start_end_list[new_add_taxa][1]
     select_distribution = dl_predict[current_start:current_end+1]
     if np.max(select_distribution) < 0.90:
         return None
     else:
-        x,y = nlargest_indices(select_distribution, int(max(10,0.01*len(select_distribution)))) 
-        
+        x,y = nlargest_indices(select_distribution, int(max(10,0.01*len(select_distribution))))
+
     for i in range(0,len(x)):
         idx = x[i]
         topology_value = y[i]
         quartet_comb = comb_of_id[current_start+idx]
-        
+
         if topology_value == 0:
             mask_node_pair.append((quartet_comb[0],quartet_comb[1]))
         if topology_value == 1:
             mask_node_pair.append((quartet_comb[0],quartet_comb[2]))
         if topology_value == 2:
             mask_node_pair.append((quartet_comb[1],quartet_comb[2]))
-            
+
     return mask_node_pair
 
 
 def mask_edge(tree,node1,node2,edge_list):
     # mask edge between node1 and node2
-        
+
     if len(edge_list) <= 3:
         return edge_list
 
@@ -222,22 +216,22 @@ def mask_edge(tree,node1,node2,edge_list):
         if len(remove_edge) >= len(edge_list) - 3:
             break
         remove_edge.append((edge_0, edge_1))
-        node = node.up  
+        node = node.up
 
     for ele in remove_edge:
         if ele in edge_list:
             edge_list.remove(ele)
-    
+
     return edge_list
 
 
 def gen_phylogenetic_tree(current_quartets, beam_size):
     '''
-        search the phylogenetic tree having highest score
-        idx: the name of numpy file 
+    search the phylogenetic tree having highest score
+    idx: the name of numpy file
     '''
     current_leave_node_name = [chr(ord(u'\u4e00')+i) for i in range(0, taxa_num)]
-    
+
     candidate_tree_beam = []
 
     quartet_id = leave_node_comb_name[0]
@@ -249,7 +243,7 @@ def gen_phylogenetic_tree(current_quartets, beam_size):
             label_id = "".join([quartet_id[0], quartet_id[2], quartet_id[1], quartet_id[3]])
         elif _label == 2:
             label_id = "".join([quartet_id[0], quartet_id[3], quartet_id[1], quartet_id[2]])
-        
+
         _tree = tree_from_quartet(label_id)
         _tree.unroot()
 
@@ -269,7 +263,7 @@ def gen_phylogenetic_tree(current_quartets, beam_size):
     for i in range(0, 3):
         current_tree_score_beam.append(candidate_tree_beam[i]['tree_score'])
         optim_tree_beam.append(candidate_tree_beam[i]['Tree'])
-    
+
     for i in range(4, len(current_leave_node_name)):
         candidate_tree_beam = []
 
@@ -310,17 +304,17 @@ def gen_phylogenetic_tree(current_quartets, beam_size):
 
             while not queue.empty():
                 tmp_dic = queue.get()
-                
+
                 tmp_tree_dict = {'Tree':tmp_dic['tree'], 'tree_score':tmp_dic['score']+current_tree_score_beam[j]}
                 candidate_tree_beam.append(tmp_tree_dict)
 
         candidate_tree_beam.sort(key=lambda k: -k['tree_score'])
         candidate_tree_beam = candidate_tree_beam[0:beam_size]
-        
+
         optim_tree_beam = []
         current_tree_score_beam = []
         for ele in candidate_tree_beam:
-            crt_tree = ele['Tree'].copy("newick") 
+            crt_tree = ele['Tree'].copy("newick")
             for node in crt_tree.traverse("preorder"):
                 if node.name == '':
                     node.name = str(internal_node_name_pool[idx_for_internal_node_name_pool])
@@ -334,11 +328,11 @@ def gen_phylogenetic_tree(current_quartets, beam_size):
 
 def gen_phylogenetic_tree_2(current_quartets, beam_size):
     '''
-        search the phylogenetic tree having highest score
-        idx: the name of numpy file 
+    search the phylogenetic tree having highest score
+    idx: the name of numpy file
     '''
     current_leave_node_name = [chr(ord(u'\u4e00')+i) for i in range(0, taxa_num)]
-    
+
     candidate_tree_beam = []
 
     quartet_id = leave_node_comb_name[0]
@@ -350,7 +344,7 @@ def gen_phylogenetic_tree_2(current_quartets, beam_size):
             label_id = "".join([quartet_id[0], quartet_id[2], quartet_id[1], quartet_id[3]])
         elif _label == 2:
             label_id = "".join([quartet_id[0], quartet_id[3], quartet_id[1], quartet_id[2]])
-        
+
         _tree = tree_from_quartet(label_id)
         _tree.unroot()
 
@@ -370,7 +364,7 @@ def gen_phylogenetic_tree_2(current_quartets, beam_size):
     for i in range(0, 3):
         current_tree_score_beam.append(candidate_tree_beam[i]['tree_score'])
         optim_tree_beam.append(candidate_tree_beam[i]['Tree'])
-    
+
     for i in range(4, len(current_leave_node_name)):
         candidate_tree_beam = []
 
@@ -406,7 +400,7 @@ def gen_phylogenetic_tree_2(current_quartets, beam_size):
                 for node_pairs in mask_node_pairs:
                     node1 = chr(ord(u'\u4e00')+node_pairs[0])
                     node2 = chr(ord(u'\u4e00')+node_pairs[1])
-                    
+
                     edge_list = mask_edge(ele.copy("deepcopy"),node1,node2,edge_list)
                     if len(edge_list) <= 3:
                         break
@@ -428,17 +422,17 @@ def gen_phylogenetic_tree_2(current_quartets, beam_size):
 
             while not queue.empty():
                 tmp_dic = queue.get()
-                
+
                 tmp_tree_dict = {'Tree':tmp_dic['tree'], 'tree_score':tmp_dic['score']+current_tree_score_beam[j]}
                 candidate_tree_beam.append(tmp_tree_dict)
 
         candidate_tree_beam.sort(key=lambda k: -k['tree_score'])
         candidate_tree_beam = candidate_tree_beam[0:beam_size]
-        
+
         optim_tree_beam = []
         current_tree_score_beam = []
         for ele in candidate_tree_beam:
-            crt_tree = ele['Tree'].copy("newick") 
+            crt_tree = ele['Tree'].copy("newick")
             for node in crt_tree.traverse("preorder"):
                 if node.name == '':
                     node.name = str(internal_node_name_pool[idx_for_internal_node_name_pool])
@@ -459,7 +453,7 @@ def transform_str(str_a, taxa_name):
             str_b += taxa_name[ord(str_a[i])-ord(u'\u4e00')]
         else:
             str_b += str_a[i]
-    
+
     return str_b
 
 
@@ -473,7 +467,7 @@ def cmp(a, b):
 
 def get_numpy(aln_file):
     '''
-        current version only supports the total length of msa less than 10K
+    current version only supports the total length of msa less than 10K
     '''
     aln = open(aln_file)
     dic = {'A':'0','T':'1','C':'2','G':'3','-':'4', 'N':'4'}
@@ -522,8 +516,8 @@ def get_numpy(aln_file):
 def get_dl_model_1200():
     '''
     get the definition of dl model 1200
-    this model aims to solve the default case 
-    which are length larger than 1200 
+    this model aims to solve the default case
+    which are length larger than 1200
     '''
     conv_x=[4,1,1,1,1,1,1,1]
     conv_y=[1,2,2,2,2,2,2,2]
@@ -532,26 +526,26 @@ def get_dl_model_1200():
 
     visible = layers.Input(shape=(4,1200,1))
     x = visible
-        
+
     for l in list(range(0,8)):
-        x = layers.ZeroPadding2D(padding=((0, 0), (0,conv_y[l]-1)))(x)        
+        x = layers.ZeroPadding2D(padding=((0, 0), (0,conv_y[l]-1)))(x)
         x = layers.Conv2D(filters=filter_s[l], kernel_size=(conv_x[l], conv_y[l]), strides=1, activation='relu')(x)
         x = layers.BatchNormalization()(x)
         x = layers.Dropout(rate=0.2)(x)
         x = layers.AveragePooling2D(pool_size=(1,pool[l]))(x)
-        
+
     flat = layers.Flatten()(x)
 
-    y = tf.keras.layers.Reshape((4,1200))(visible)
-    y = tf.keras.layers.Bidirectional(tf.keras.layers.LSTM(128,return_sequences=True))(y)
-    y = tf.keras.layers.Bidirectional(tf.keras.layers.LSTM(128,return_sequences=True))(y)
-    y = tf.keras.layers.Bidirectional(tf.keras.layers.LSTM(128))(y)
-    flat = tf.keras.layers.concatenate([flat, y],axis=-1)
+    y = layers.Reshape((4,1200))(visible)
+    y = layers.Bidirectional(layers.LSTM(128,return_sequences=True))(y)
+    y = layers.Bidirectional(layers.LSTM(128,return_sequences=True))(y)
+    y = layers.Bidirectional(layers.LSTM(128))(y)
+    flat = layers.concatenate([flat, y],axis=-1)
 
     hidden1 = layers.Dense(1024,activation='relu')(flat)
     drop1 = layers.Dropout(rate=0.2)(hidden1)
     output = layers.Dense(3, activation='softmax')(drop1)
-    model = tf.keras.Model(inputs=visible, outputs=output)
+    model = models.Model(inputs=visible, outputs=output)
 
     return model
 
@@ -559,8 +553,8 @@ def get_dl_model_1200():
 def get_dl_model_240():
     '''
     get the definition of dl model 240
-    this model aims to solve the short length case 
-    which are length larger than 240 
+    this model aims to solve the short length case
+    which are length larger than 240
     '''
     conv_x=[4,1,1,1,1,1,1,1]
     conv_y=[1,2,2,2,2,2,2,2]
@@ -571,7 +565,7 @@ def get_dl_model_240():
     x = visible
 
     for l in list(range(0,8)):
-        x = layers.ZeroPadding2D(padding=((0, 0), (0,conv_y[l]-1)))(x)        
+        x = layers.ZeroPadding2D(padding=((0, 0), (0,conv_y[l]-1)))(x)
         x = layers.Conv2D(filters=filter_s[l], kernel_size=(conv_x[l], conv_y[l]), strides=1, activation='relu')(x)
         x = layers.BatchNormalization()(x)
         x = layers.Dropout(rate=0.2)(x)
@@ -580,16 +574,16 @@ def get_dl_model_240():
 
     flat = layers.Flatten()(x)
 
-    y = tf.keras.layers.Reshape((4,240))(visible)
-    y = tf.keras.layers.Bidirectional(tf.keras.layers.LSTM(128,return_sequences=True))(y)
-    y = tf.keras.layers.Bidirectional(tf.keras.layers.LSTM(128,return_sequences=True))(y)
-    y = tf.keras.layers.Bidirectional(tf.keras.layers.LSTM(128))(y)
-    flat = tf.keras.layers.concatenate([flat, y],axis=-1)
+    y = layers.Reshape((4,240))(visible)
+    y = layers.Bidirectional(layers.LSTM(128,return_sequences=True))(y)
+    y = layers.Bidirectional(layers.LSTM(128,return_sequences=True))(y)
+    y = layers.Bidirectional(layers.LSTM(128))(y)
+    flat = layers.concatenate([flat, y],axis=-1)
 
     hidden1 = layers.Dense(1024,activation='relu')(flat)
     drop1 = layers.Dropout(rate=0.2)(hidden1)
     output = layers.Dense(3, activation='softmax')(drop1)
-    model = tf.keras.Model(inputs=visible, outputs=output)
+    model = models.Model(inputs=visible, outputs=output)
 
     return model
 
@@ -730,7 +724,7 @@ if __name__ == '__main__':
                         taxa_name[len(taxa_name)] = record.id
                         f.write('>'+str(len(taxa_name)-1)+'\n')
                         f.write(str(record.seq)+'\n')
-            except: 
+            except:
                 print('Something wrong about your msa file, please check your msa file')
             break
 
@@ -764,7 +758,7 @@ if __name__ == '__main__':
         term = [chr(ord(u'\u4e00')+id) for id in ele]
         dic_for_leave_node_comb_name["".join(term)] = len(dic_for_leave_node_comb_name)
         leave_node_comb_name.append("".join(term))
-    
+
     internal_node_name_pool = ['internal_node_' + str(i) for i in range(3, 3000)]
 
     fusang_msa_dir = save_prefix + '_fusang.fas'
@@ -788,7 +782,7 @@ if __name__ == '__main__':
         if sequence_type == 'noncoding' and branch_model == 'uniform':
             dl_model.load_weights(filepath='./dl_model/len_240/N1U/best_weights_clas.h5')
 
-        window_number = int(len_of_msa * float(window_coverage) // 240 + 1) 
+        window_number = int(len_of_msa * float(window_coverage) // 240 + 1)
 
     elif len_of_msa > 1210:
         dl_model = get_dl_model_1200()
@@ -805,7 +799,7 @@ if __name__ == '__main__':
         if sequence_type == 'noncoding' and branch_model == 'uniform':
             dl_model.load_weights(filepath='./dl_model/len_1200/N2U/best_weights_clas.h5')
 
-        window_number = int(len_of_msa * float(window_coverage) // 1200 + 1) 
+        window_number = int(len_of_msa * float(window_coverage) // 1200 + 1)
 
 
     dl_predict = np.zeros((len(comb_of_id), 3))

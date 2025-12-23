@@ -4,6 +4,15 @@ import sys
 import warnings
 from io import StringIO
 import argparse
+import math
+import functools
+from itertools import combinations
+from multiprocessing import Pool
+import multiprocessing
+
+import numpy as np
+from Bio import AlignIO
+from ete3 import Tree
 
 # Parse arguments early to set logging level before TensorFlow import
 _parser = argparse.ArgumentParser('get_msa_dir', add_help=False)
@@ -11,27 +20,105 @@ _parser.add_argument('-q', '--quiet', action='store_true', help='Suppress warnin
 _parser.add_argument('-v', '--verbose', action='store_true', help='Show verbose output including stderr messages')
 _early_args, _ = _parser.parse_known_args()
 
+# Constants
+WINDOW_SIZE_SHORT = 240
+WINDOW_SIZE_LONG = 1200
+MSA_LENGTH_THRESHOLD = 1210
+BATCH_SIZE = 50000
+MIN_TAXA_FOR_MASKING = 10
+MIN_EDGES_FOR_MASKING = 3
+MAX_PROCESSES = 64
+MIN_PROCESSES = 6
+MAX_MSA_LENGTH = 10000
+SEQUENCE_PADDING = 14000
+EPSILON = 1e-200
+
+
+class StderrRedirector:
+    """
+    Context manager for redirecting stderr to suppress output.
+    Handles both Python-level and file descriptor level redirection.
+    Supports idempotent enter/exit (safe to call multiple times).
+    """
+
+    def __init__(self, redirect=True):
+        """
+        Initialize the stderr redirector.
+
+        Args:
+            redirect: If True, redirect stderr; if False, do nothing
+        """
+        self.redirect = redirect
+        self.original_stderr = None
+        self.stderr_fd = None
+        self.original_stderr_fd = None
+        self._enter_count = 0  # Track nesting level
+
+    def __enter__(self):
+        """Enter the context and redirect stderr if needed."""
+        if not self.redirect:
+            return self
+
+        self._enter_count += 1
+        # Only redirect on first enter
+        if self._enter_count == 1:
+            # Redirect at Python level
+            self.original_stderr = sys.stderr
+            sys.stderr = StringIO()
+
+            # Also redirect at file descriptor level to catch C++ messages
+            try:
+                self.original_stderr_fd = os.dup(2)  # Save original stderr fd
+                self.stderr_fd = os.open(os.devnull, os.O_WRONLY)
+                os.dup2(self.stderr_fd, 2)  # Redirect stderr fd to /dev/null
+            except (OSError, AttributeError):
+                # If file descriptor redirection fails, continue with Python-level redirection
+                self.stderr_fd = None
+                self.original_stderr_fd = None
+
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Exit the context and restore stderr."""
+        if not self.redirect or self._enter_count == 0:
+            return False
+
+        self._enter_count -= 1
+        # Only restore on last exit
+        if self._enter_count == 0:
+            # Restore Python-level stderr
+            if self.original_stderr is not None:
+                sys.stderr = self.original_stderr
+                self.original_stderr = None
+
+            # Restore file descriptor level redirection
+            if self.original_stderr_fd is not None:
+                try:
+                    os.dup2(self.original_stderr_fd, 2)
+                    os.close(self.original_stderr_fd)
+                    if self.stderr_fd is not None:
+                        os.close(self.stderr_fd)
+                except (OSError, AttributeError):
+                    pass
+                finally:
+                    self.original_stderr_fd = None
+                    self.stderr_fd = None
+
+        return False  # Don't suppress exceptions
+
+
 # Set TensorFlow and NumPy warning levels based on verbosity
 os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
-# Store original stderr for restoration at end of execution (module-level variable)
-_quiet_original_stderr_global = None
-_quiet_stderr_fd = None
-_quiet_original_stderr_fd = None
+
+# Create stderr redirector based on early args
+_stderr_redirector = StderrRedirector(redirect=_early_args.quiet)
+
 if _early_args.quiet:
     os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # Suppress all messages including ERROR
     warnings.filterwarnings('ignore')
-    # Redirect stderr at both Python and file descriptor level to catch all messages
-    _quiet_original_stderr_global = sys.stderr
-    sys.stderr = StringIO()
-    # Also redirect at file descriptor level to catch C++ messages
-    try:
-        _quiet_original_stderr_fd = os.dup(2)  # Save original stderr fd
-        _quiet_stderr_fd = os.open(os.devnull, os.O_WRONLY)
-        os.dup2(_quiet_stderr_fd, 2)  # Redirect stderr fd to /dev/null
-    except (OSError, AttributeError):
-        # If file descriptor redirection fails, continue with Python-level redirection
-        _quiet_stderr_fd = None
-        _quiet_original_stderr_fd = None
+    # Enter the redirector context early (before TensorFlow import)
+    # This will be properly exited in main() using 'with' statement
+    _stderr_redirector.__enter__()
 elif _early_args.verbose:
     os.environ['TF_CPP_MIN_LOG_LEVEL'] = '0'  # Show all messages
     warnings.filterwarnings('default')
@@ -39,31 +126,13 @@ else:
     os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # Suppress INFO and WARNING messages (default)
     warnings.filterwarnings('ignore', category=FutureWarning)
 
-import numpy as np
-import functools
-from Bio import AlignIO
-from itertools import combinations
-
-import math
-try:
-    import tensorflow as tf
-    from keras import layers, models
-finally:
-    # Don't restore stderr yet in quiet mode - keep it redirected throughout execution
-    # It will be restored at the end of main() execution
-    pass
-
-from ete3 import Tree
-
-global org_seq, comb_of_id, dl_model, dl_predict, len_of_msa, dic_for_leave_node_comb_name, start_end_list
-global taxa_num, leave_node_id, leave_node_name, leave_node_comb_id, leave_node_comb_name, internal_node_name_pool
-
-from multiprocessing import Pool
-import multiprocessing
+import tensorflow as tf
+from keras import layers, models
 
 
-def comb_math(n,m):
-    return math.factorial(n)//(math.factorial(n-m)*math.factorial(m))
+def comb_math(n, m):
+    """Calculate combination C(n, m) = n! / (m! * (n-m)!)."""
+    return math.factorial(n) // (math.factorial(n - m) * math.factorial(m))
 
 
 def nlargest_indices(arr, n):
@@ -95,12 +164,10 @@ def get_topology_ID(quartet):
 
 
 def get_current_topology_id(quart_key, cluster_1, cluster_2):
-    ans = []
+    """Determine topology ID based on quartet key and cluster positions."""
     a1 = quart_key.index(cluster_1)
     a2 = quart_key.index(cluster_2)
-    ans.append(str(a1))
-    ans.append(str(a2))
-    ans = set(ans)
+    ans = {str(a1), str(a2)}
     if ans == {'0', '1'} or ans == {'2', '3'}:
         return 0
     elif ans == {'0', '2'} or ans == {'1', '3'}:
@@ -109,24 +176,23 @@ def get_current_topology_id(quart_key, cluster_1, cluster_2):
         return 2
     else:
         print('Error of function get_current_topology_id, exit the program')
-        sys.exit(0)
+        sys.exit(1)
 
 
 def judge_tree_score(tree, quart_distribution, new_addition_taxa, dic_for_leave_node_comb_name):
-    '''
-    parameter
+    """
+    Calculate tree score based on quartet distribution.
+
+    Parameters:
     tree: a candidate tree, can be any taxas
     quart_distribution: the prob distribution of the topology of every 4-taxa
-    '''
+    new_addition_taxa: newly added taxon name
+    dic_for_leave_node_comb_name: dictionary mapping quartet keys to indices
+    """
     crt_tree = tree.copy("newick")
-    leaves = crt_tree.get_leaves()
-
-    leaves = [ele.name for ele in leaves]
+    leaves = [ele.name for ele in crt_tree.get_leaves()]
     total_quarts = list(combinations(leaves, 4))
-    quarts = []
-    for ele in total_quarts:
-        if new_addition_taxa in ele:
-            quarts.append(ele)
+    quarts = [ele for ele in total_quarts if new_addition_taxa in ele]
 
     total_quart_score = 0
 
@@ -134,42 +200,38 @@ def judge_tree_score(tree, quart_distribution, new_addition_taxa, dic_for_leave_
         crt_tree = tree.copy("newick")
         try:
             crt_tree.prune(list(quart))
-        except:
+        except Exception:
             print('Error of pruning 4 taxa from current tree, the current tree is:')
             print(crt_tree)
-            sys.exit(0)
+            sys.exit(1)
 
         quart_key = "".join(sorted(list(quart)))
-        #quart_topo_id = leave_node_comb_name.index(quart_key)
-
         quart_topo_id = dic_for_leave_node_comb_name[quart_key]
-
         quart_topo_distribution = quart_distribution[quart_topo_id]
 
         # judge current tree belongs to which topology
         tmp = re.findall(r"\([\s\S]\,[\s\S]\)", crt_tree.write(format=9))[0]
         topology_id = get_current_topology_id(quart_key, tmp[1], tmp[3])
 
-        total_quart_score += np.log(quart_topo_distribution[topology_id]+1e-200)
+        total_quart_score += np.log(quart_topo_distribution[topology_id] + EPSILON)
 
     return total_quart_score
 
 
 def get_modify_tree(tmp_tree, edge_0, edge_1, new_add_node_name):
-    '''
-    add a new leave node between edge_0 and edge_1
-    default: edge_0 is the parent node of edge_1
-    '''
+    """
+    Add a new leave node between edge_0 and edge_1.
+    Default: edge_0 is the parent node of edge_1.
+    """
     modify_tree = tmp_tree.copy("newick")
     if edge_0 != edge_1:
         new_node = Tree()
         new_node.add_child(name=new_add_node_name)
-        detached_node = modify_tree&edge_1
-        detached = detached_node.detach()
-        inserted_node = modify_tree&edge_0
+        detached_node = modify_tree & edge_1
+        detached_node.detach()
+        inserted_node = modify_tree & edge_0
         inserted_node.add_child(new_node)
         new_node.add_child(detached_node)
-
     else:
         modify_tree.add_child(name=new_add_node_name)
 
@@ -188,70 +250,56 @@ def search_this_branch(tmp_tree, edge_0, edge_1, current_quartets, current_leave
     queue.put(dic)
 
 
-def select_mask_node_pair(dl_predict, new_add_taxa):
-
-    if new_add_taxa <= 9:
+def select_mask_node_pair(dl_predict, new_add_taxa, start_end_list, comb_of_id):
+    """Select node pairs to mask based on prediction confidence."""
+    if new_add_taxa <= MIN_TAXA_FOR_MASKING - 1:
         return None
 
     mask_node_pair = []
-
     current_start = start_end_list[new_add_taxa][0]
     current_end = start_end_list[new_add_taxa][1]
-    select_distribution = dl_predict[current_start:current_end+1]
+    select_distribution = dl_predict[current_start:current_end + 1]
     if np.max(select_distribution) < 0.90:
         return None
-    else:
-        x,y = nlargest_indices(select_distribution, int(max(10,0.01*len(select_distribution))))
 
-    for i in range(0,len(x)):
+    x, y = nlargest_indices(select_distribution, int(max(10, 0.01 * len(select_distribution))))
+
+    for i in range(len(x)):
         idx = x[i]
         topology_value = y[i]
-        quartet_comb = comb_of_id[current_start+idx]
+        quartet_comb = comb_of_id[current_start + idx]
 
         if topology_value == 0:
-            mask_node_pair.append((quartet_comb[0],quartet_comb[1]))
-        if topology_value == 1:
-            mask_node_pair.append((quartet_comb[0],quartet_comb[2]))
-        if topology_value == 2:
-            mask_node_pair.append((quartet_comb[1],quartet_comb[2]))
+            mask_node_pair.append((quartet_comb[0], quartet_comb[1]))
+        elif topology_value == 1:
+            mask_node_pair.append((quartet_comb[0], quartet_comb[2]))
+        elif topology_value == 2:
+            mask_node_pair.append((quartet_comb[1], quartet_comb[2]))
 
     return mask_node_pair
 
 
-def mask_edge(tree,node1,node2,edge_list):
-    # mask edge between node1 and node2
-
-    if len(edge_list) <= 3:
+def mask_edge(tree, node1, node2, edge_list):
+    """Mask edge between node1 and node2."""
+    if len(edge_list) <= MIN_EDGES_FOR_MASKING:
         return edge_list
 
-    ancestor_name = tree.get_common_ancestor(node1,node2).name
+    ancestor_name = tree.get_common_ancestor(node1, node2).name
     remove_edge = []
 
-    node = tree.search_nodes(name=node1)[0]
-    while node:
-        if node.name == ancestor_name:
-            break
+    for node_name in [node1, node2]:
+        node = tree.search_nodes(name=node_name)[0]
+        while node:
+            if node.name == ancestor_name:
+                break
 
-        edge_0 = node.up.name
-        edge_1 = node.name
+            edge_0 = node.up.name
+            edge_1 = node.name
 
-        if len(remove_edge) >= len(edge_list) - 3:
-            break
-        remove_edge.append((edge_0, edge_1))
-        node = node.up
-
-    node = tree.search_nodes(name=node2)[0]
-    while node:
-        if node.name == ancestor_name:
-            break
-
-        edge_0 = node.up.name
-        edge_1 = node.name
-
-        if len(remove_edge) >= len(edge_list) - 3:
-            break
-        remove_edge.append((edge_0, edge_1))
-        node = node.up
+            if len(remove_edge) >= len(edge_list) - MIN_EDGES_FOR_MASKING:
+                break
+            remove_edge.append((edge_0, edge_1))
+            node = node.up
 
     for ele in remove_edge:
         if ele in edge_list:
@@ -260,17 +308,28 @@ def mask_edge(tree,node1,node2,edge_list):
     return edge_list
 
 
-def gen_phylogenetic_tree(current_quartets, beam_size):
-    '''
-    search the phylogenetic tree having highest score
-    idx: the name of numpy file
-    '''
-    current_leave_node_name = [chr(ord(u'\u4e00')+i) for i in range(0, taxa_num)]
+def gen_phylogenetic_tree(current_quartets, beam_size, taxa_num, leave_node_comb_name,
+                          dic_for_leave_node_comb_name, internal_node_name_pool,
+                          use_masking=False, start_end_list=None, comb_of_id=None):
+    """
+    Search the phylogenetic tree having highest score using beam search.
 
+    Parameters:
+    current_quartets: quartet distribution predictions
+    beam_size: size of beam for search
+    taxa_num: number of taxa
+    leave_node_comb_name: list of quartet combinations
+    dic_for_leave_node_comb_name: dictionary mapping quartet keys to indices
+    internal_node_name_pool: pool of names for internal nodes
+    use_masking: whether to use edge masking optimization
+    start_end_list: list of start/end indices for masking
+    comb_of_id: list of quartet ID combinations
+    """
+    current_leave_node_name = [chr(ord(u'\u4e00') + i) for i in range(taxa_num)]
     candidate_tree_beam = []
-
     quartet_id = leave_node_comb_name[0]
 
+    # Initialize with three possible topologies for first quartet
     for _label in [0, 1, 2]:
         if _label == 0:
             label_id = "".join([quartet_id[0], quartet_id[1], quartet_id[2], quartet_id[3]])
@@ -281,71 +340,86 @@ def gen_phylogenetic_tree(current_quartets, beam_size):
 
         _tree = tree_from_quartet(label_id)
         _tree.unroot()
-
         _tree_score = current_quartets[0, _label]
-
-        tmp_tree_dict = {'Tree':_tree, 'tree_score':_tree_score}
+        tmp_tree_dict = {'Tree': _tree, 'tree_score': _tree_score}
         candidate_tree_beam.append(tmp_tree_dict)
-
         candidate_tree_beam.sort(key=lambda k: -k['tree_score'])
 
     idx_for_internal_node_name_pool = 0
-
     current_tree_score_beam = []
     optim_tree_beam = []
 
-    #in the start point set beam size equal to 3
-    for i in range(0, 3):
+    # In the start point set beam size equal to 3
+    for i in range(3):
         current_tree_score_beam.append(candidate_tree_beam[i]['tree_score'])
         optim_tree_beam.append(candidate_tree_beam[i]['Tree'])
 
+    # Add remaining taxa one by one
     for i in range(4, len(current_leave_node_name)):
         candidate_tree_beam = []
 
-        for j in range(0, len(optim_tree_beam)):
+        for j in range(len(optim_tree_beam)):
             ele = optim_tree_beam[j]
+            if ele is None:
+                continue
 
-            idx_for_this_iter = 0
-
+            optim_tree = ele.copy("newick")
             edge_0_list = []
             edge_1_list = []
 
-            if ele == None:
-                continue
-            optim_tree = ele.copy("newick")
-
+            # Collect all edges
             for node in optim_tree.iter_descendants():
-                tmp_tree = optim_tree.copy("newick")
                 edge_0 = node.up.name
                 edge_1 = node.name
                 if edge_0 == '' or edge_1 == '':
                     continue
+                edge_0_list.append(edge_0)
+                edge_1_list.append(edge_1)
 
-                else:
-                    edge_0_list.append(edge_0)
-                    edge_1_list.append(edge_1)
+            # Apply masking if enabled
+            if use_masking and start_end_list is not None and comb_of_id is not None:
+                edge_list = [(edge_0_list[k], edge_1_list[k]) for k in range(len(edge_0_list))]
+                mask_node_pairs = select_mask_node_pair(current_quartets, i, start_end_list, comb_of_id)
 
+                if mask_node_pairs is not None:
+                    mask_node_pairs = list(set(mask_node_pairs))
+                    for node_pairs in mask_node_pairs:
+                        node1 = chr(ord(u'\u4e00') + node_pairs[0])
+                        node2 = chr(ord(u'\u4e00') + node_pairs[1])
+                        edge_list = mask_edge(ele.copy("deepcopy"), node1, node2, edge_list)
+                        if len(edge_list) <= MIN_EDGES_FOR_MASKING:
+                            break
+
+                edge_0_list = [ele[0] for ele in edge_list]
+                edge_1_list = [ele[1] for ele in edge_list]
+
+            # Search all branches in parallel
             queue = multiprocessing.Manager().Queue()
-            para_list = [(tmp_tree, edge_0_list[k], edge_1_list[k], current_quartets, current_leave_node_name[i], queue, dic_for_leave_node_comb_name) for k in range(0, len(edge_0_list))]
+            para_list = [(optim_tree, edge_0_list[k], edge_1_list[k], current_quartets,
+                         current_leave_node_name[i], queue, dic_for_leave_node_comb_name)
+                        for k in range(len(edge_0_list))]
 
-            process_num = min(64, 2*i+6)
+            if use_masking:
+                process_num = min(MAX_PROCESSES, len(edge_0_list))
+            else:
+                process_num = min(MAX_PROCESSES, 2 * i + MIN_PROCESSES)
             pool = Pool(process_num)
             pool.starmap(search_this_branch, para_list)
             pool.close()
             pool.join()
 
-            candidate_tree_score = []
-            candidate_tree = []
-
+            # Collect results
             while not queue.empty():
                 tmp_dic = queue.get()
-
-                tmp_tree_dict = {'Tree':tmp_dic['tree'], 'tree_score':tmp_dic['score']+current_tree_score_beam[j]}
+                tmp_tree_dict = {'Tree': tmp_dic['tree'],
+                               'tree_score': tmp_dic['score'] + current_tree_score_beam[j]}
                 candidate_tree_beam.append(tmp_tree_dict)
 
+        # Keep top beam_size candidates
         candidate_tree_beam.sort(key=lambda k: -k['tree_score'])
         candidate_tree_beam = candidate_tree_beam[0:beam_size]
 
+        # Update beam for next iteration
         optim_tree_beam = []
         current_tree_score_beam = []
         for ele in candidate_tree_beam:
@@ -355,147 +429,32 @@ def gen_phylogenetic_tree(current_quartets, beam_size):
                     node.name = str(internal_node_name_pool[idx_for_internal_node_name_pool])
                     idx_for_internal_node_name_pool += 1
             optim_tree_beam.append(crt_tree)
-            crt_tree_score = ele['tree_score']
-            current_tree_score_beam.append(crt_tree_score)
+            current_tree_score_beam.append(ele['tree_score'])
 
     return optim_tree_beam[0].write(format=9)
 
 
-def gen_phylogenetic_tree_2(current_quartets, beam_size):
-    '''
-    search the phylogenetic tree having highest score
-    idx: the name of numpy file
-    '''
-    current_leave_node_name = [chr(ord(u'\u4e00')+i) for i in range(0, taxa_num)]
-
-    candidate_tree_beam = []
-
-    quartet_id = leave_node_comb_name[0]
-
-    for _label in [0, 1, 2]:
-        if _label == 0:
-            label_id = "".join([quartet_id[0], quartet_id[1], quartet_id[2], quartet_id[3]])
-        elif _label == 1:
-            label_id = "".join([quartet_id[0], quartet_id[2], quartet_id[1], quartet_id[3]])
-        elif _label == 2:
-            label_id = "".join([quartet_id[0], quartet_id[3], quartet_id[1], quartet_id[2]])
-
-        _tree = tree_from_quartet(label_id)
-        _tree.unroot()
-
-        _tree_score = current_quartets[0, _label]
-
-        tmp_tree_dict = {'Tree':_tree, 'tree_score':_tree_score}
-        candidate_tree_beam.append(tmp_tree_dict)
-
-        candidate_tree_beam.sort(key=lambda k: -k['tree_score'])
-
-    idx_for_internal_node_name_pool = 0
-
-    current_tree_score_beam = []
-    optim_tree_beam = []
-
-    #in the start point set beam size equal to 3
-    for i in range(0, 3):
-        current_tree_score_beam.append(candidate_tree_beam[i]['tree_score'])
-        optim_tree_beam.append(candidate_tree_beam[i]['Tree'])
-
-    for i in range(4, len(current_leave_node_name)):
-        candidate_tree_beam = []
-
-        for j in range(0, len(optim_tree_beam)):
-            ele = optim_tree_beam[j]
-
-            idx_for_this_iter = 0
-
-            edge_0_list = []
-            edge_1_list = []
-
-            if ele == None:
-                continue
-            optim_tree = ele.copy("newick")
-
-            for node in optim_tree.iter_descendants():
-                tmp_tree = optim_tree.copy("newick")
-                edge_0 = node.up.name
-                edge_1 = node.name
-                if edge_0 == '' or edge_1 == '':
-                    continue
-
-                else:
-                    edge_0_list.append(edge_0)
-                    edge_1_list.append(edge_1)
-
-            edge_list = [(edge_0_list[i], edge_1_list[i]) for i in range(0, len(edge_0_list))]
-            mask_node_pairs = select_mask_node_pair(current_quartets, i)
-
-            if mask_node_pairs != None:
-
-                mask_node_pairs = list(set(mask_node_pairs))
-                for node_pairs in mask_node_pairs:
-                    node1 = chr(ord(u'\u4e00')+node_pairs[0])
-                    node2 = chr(ord(u'\u4e00')+node_pairs[1])
-
-                    edge_list = mask_edge(ele.copy("deepcopy"),node1,node2,edge_list)
-                    if len(edge_list) <= 3:
-                        break
-
-            edge_0_list = [ele[0] for ele in edge_list]
-            edge_1_list = [ele[1] for ele in edge_list]
-
-            queue = multiprocessing.Manager().Queue()
-            para_list = [(tmp_tree, edge_0_list[k], edge_1_list[k], current_quartets, current_leave_node_name[i], queue, dic_for_leave_node_comb_name) for k in range(0, len(edge_0_list))]
-
-            process_num = min(64, len(edge_0_list))
-            pool = Pool(process_num)
-            pool.starmap(search_this_branch, para_list)
-            pool.close()
-            pool.join()
-
-            candidate_tree_score = []
-            candidate_tree = []
-
-            while not queue.empty():
-                tmp_dic = queue.get()
-
-                tmp_tree_dict = {'Tree':tmp_dic['tree'], 'tree_score':tmp_dic['score']+current_tree_score_beam[j]}
-                candidate_tree_beam.append(tmp_tree_dict)
-
-        candidate_tree_beam.sort(key=lambda k: -k['tree_score'])
-        candidate_tree_beam = candidate_tree_beam[0:beam_size]
-
-        optim_tree_beam = []
-        current_tree_score_beam = []
-        for ele in candidate_tree_beam:
-            crt_tree = ele['Tree'].copy("newick")
-            for node in crt_tree.traverse("preorder"):
-                if node.name == '':
-                    node.name = str(internal_node_name_pool[idx_for_internal_node_name_pool])
-                    idx_for_internal_node_name_pool += 1
-            optim_tree_beam.append(crt_tree)
-            crt_tree_score = ele['tree_score']
-            current_tree_score_beam.append(crt_tree_score)
-
-    return optim_tree_beam[0].write(format=9)
-
-
-def transform_str(str_a, taxa_name):
+def transform_str(str_a, taxa_name, taxa_num):
+    """Transform internal taxon IDs to actual taxon names."""
     str_b = ''
-    id_set = [chr(ord(u'\u4e00')+i) for i in range(0, taxa_num)]
+    id_set = [chr(ord(u'\u4e00') + i) for i in range(taxa_num)]
 
-    for i in range(0, len(str_a)):
-        if str_a[i] in id_set:
-            str_b += taxa_name[ord(str_a[i])-ord(u'\u4e00')]
+    for char in str_a:
+        if char in id_set:
+            str_b += taxa_name[ord(char) - ord(u'\u4e00')]
         else:
-            str_b += str_a[i]
+            str_b += char
 
     return str_b
 
 
 def cmp(a, b):
-    if int(b) > int(a):
+    """Compare function for sorting taxa names numerically."""
+    a_int = int(a)
+    b_int = int(b)
+    if a_int < b_int:
         return -1
-    if int(a) < int(b):
+    if a_int > b_int:
         return 1
     return 0
 
@@ -515,56 +474,38 @@ def get_numpy(aln_file):
 
 
 def _process_alignment(aln):
-    '''Process alignment file-like object and return numpy array'''
-    dic = {'A':'0', 'T':'1', 'C':'2', 'G':'3', '-':'4', 'N':'4'}
+    """Process alignment file-like object and return numpy array."""
+    dic = {'A': '0', 'T': '1', 'C': '2', 'G': '3', '-': '4', 'N': '4'}
 
-    # for masking other unknown bases
+    # For masking other unknown bases
     other_base = ['R', 'Y', 'K', 'M', 'U', 'S', 'W', 'B', 'D', 'H', 'V', 'X']
     for ele in other_base:
         dic[ele] = '4'
 
-    matrix_out=[]
-    fasta_dic={}
+    fasta_dic = {}
     for line in aln:
-        if line[0]==">":
-            header=line[1:].rstrip('\n').strip()
-            fasta_dic[header]=[]
-        elif line[0].isalpha() or line[0]=='-':
+        if line[0] == ">":
+            header = line[1:].rstrip('\n').strip()
+            fasta_dic[header] = []
+        elif line[0].isalpha() or line[0] == '-':
+            processed_line = line[:].rstrip('\n').strip()
             for base, num in dic.items():
-                line=line[:].rstrip('\n').strip().replace(base,num)
-            line=list(line)
-            line=[int(n) for n in line]
-            fasta_dic[header] += line+[4]*(14000-len(line))
+                processed_line = processed_line.replace(base, num)
+            line_list = [int(n) for n in list(processed_line)]
+            fasta_dic[header] += line_list + [4] * (SEQUENCE_PADDING - len(line_list))
 
-    taxa_block=[]
+    taxa_block = []
     for taxa in sorted(list(fasta_dic.keys()), key=functools.cmp_to_key(cmp)):
         taxa_block.append(fasta_dic[taxa.strip()])
-    fasta_dic={}
-    matrix_out.append(taxa_block)
 
-    return np.array(matrix_out)
-
-
-# def gen_quartet_seq(str, id, start_point):
-#     index = np.array(str)
-#     end_point = start_point + 1200
-#     current_quartet = org_seq[0,index[:],start_point:end_point]
-#     quartet_seq[id, comb_of_id.index(str)] = current_quartet
-
-
-# def gen_quartet_seq_2(str, id, start_point):
-#     index = np.array(str)
-#     end_point = start_point + 240
-#     current_quartet = org_seq[0,index[:],start_point:end_point]
-#     quartet_seq[id, comb_of_id.index(str)] = current_quartet
+    return np.array([taxa_block])
 
 
 def get_dl_model_1200():
-    '''
-    get the definition of dl model 1200
-    this model aims to solve the default case
-    which are length larger than 1200
-    '''
+    """
+    Get the definition of DL model for sequences longer than 1200.
+    This model aims to solve the default case for sequences with length larger than 1200.
+    """
     conv_x=[4,1,1,1,1,1,1,1]
     conv_y=[1,2,2,2,2,2,2,2]
     pool=[1,4,4,4,2,2,2,1]
@@ -597,11 +538,10 @@ def get_dl_model_1200():
 
 
 def get_dl_model_240():
-    '''
-    get the definition of dl model 240
-    this model aims to solve the short length case
-    which are length larger than 240
-    '''
+    """
+    Get the definition of DL model for sequences up to 1210.
+    This model aims to solve the short length case for sequences with length larger than 240.
+    """
     conv_x=[4,1,1,1,1,1,1,1]
     conv_y=[1,2,2,2,2,2,2,2]
     pool=[1,2,2,2,2,2,2,2]
@@ -634,106 +574,145 @@ def get_dl_model_240():
     return model
 
 
-def fill_dl_predict_each_slide_window(len_idx_1, len_idx_2, verbose=0):
-    start_pos = 0
-    iters = len(comb_of_id) // 50000
-    for i in range(0, iters):
-        batch_seq = np.zeros((50000, 4, 1200))
+def fill_dl_predict_each_slide_window(len_idx_1, len_idx_2, window_size, comb_of_id, org_seq,
+                                      dl_model, dl_predict, verbose=0):
+    """Process predictions for a single sliding window."""
+    iters = len(comb_of_id) // BATCH_SIZE
+    for i in range(iters):
+        batch_seq = np.zeros((BATCH_SIZE, 4, window_size))
 
-        for j in range(0, len(batch_seq)):
-            idx = np.array(comb_of_id[i*50000+j])
+        for j in range(BATCH_SIZE):
+            idx = np.array(comb_of_id[i * BATCH_SIZE + j])
             batch_seq[j] = org_seq[0, idx[:], len_idx_1:len_idx_2]
 
         test_seq = tf.expand_dims(batch_seq.astype(np.float32), axis=-1)
         predicted = dl_model.predict(x=test_seq, verbose=verbose)
 
-        for j in range(0, len(batch_seq)):
-            dl_predict[i*50000+j,:] += predicted[j,:]
-        #dl_predict[i*50000:i*50000+len(batch_seq),:] += predicted[:,:]
+        for j in range(BATCH_SIZE):
+            dl_predict[i * BATCH_SIZE + j, :] += predicted[j, :]
 
-        start_pos += 50000
+    # Process remaining items
+    last_batch_size = len(comb_of_id) % BATCH_SIZE
+    if last_batch_size > 0:
+        batch_seq = np.zeros((last_batch_size, 4, window_size))
 
-    last_batch_size = len(comb_of_id) % 50000
-    batch_seq = np.zeros((last_batch_size, 4, 1200))
-
-    for j in range(0, len(batch_seq)):
-        idx = np.array(comb_of_id[iters*50000+j])
-        batch_seq[j] = org_seq[0, idx[:], len_idx_1:len_idx_2]
-
-    test_seq = tf.expand_dims(batch_seq.astype(np.float32), axis=-1)
-    predicted = dl_model.predict(x=test_seq, verbose=verbose)
-
-    for j in range(0, len(batch_seq)):
-        dl_predict[iters*50000+j,:] += predicted[j,:]
-    #dl_predict[iters*50000:iters*50000+len(batch_seq),:] += predicted[:,:]
-
-
-def fill_dl_predict_each_slide_window_2(len_idx_1, len_idx_2, verbose=0):
-    start_pos = 0
-    iters = len(comb_of_id) // 50000
-    for i in range(0, iters):
-        batch_seq = np.zeros((50000, 4, 240))
-
-        for j in range(0, len(batch_seq)):
-            idx = np.array(comb_of_id[i*50000+j])
+        for j in range(last_batch_size):
+            idx = np.array(comb_of_id[iters * BATCH_SIZE + j])
             batch_seq[j] = org_seq[0, idx[:], len_idx_1:len_idx_2]
 
         test_seq = tf.expand_dims(batch_seq.astype(np.float32), axis=-1)
         predicted = dl_model.predict(x=test_seq, verbose=verbose)
 
-        for j in range(0, len(batch_seq)):
-            dl_predict[i*50000+j,:] += predicted[j,:]
-        #dl_predict[i*50000:i*50000+len(batch_seq),:] += predicted[:,:]
-
-        start_pos += 50000
-
-    last_batch_size = len(comb_of_id) % 50000
-    batch_seq = np.zeros((last_batch_size, 4, 240))
-
-    for j in range(0, len(batch_seq)):
-        idx = np.array(comb_of_id[iters*50000+j])
-        batch_seq[j] = org_seq[0, idx[:], len_idx_1:len_idx_2]
-
-    test_seq = tf.expand_dims(batch_seq.astype(np.float32), axis=-1)
-    predicted = dl_model.predict(x=test_seq, verbose=verbose)
-
-    for j in range(0, len(batch_seq)):
-        dl_predict[iters*50000+j,:] += predicted[j,:]
-    #dl_predict[iters*50000:iters*50000+len(batch_seq),:] += predicted[:,:]
+        for j in range(last_batch_size):
+            dl_predict[iters * BATCH_SIZE + j, :] += predicted[j, :]
 
 
-def fill_dl_predict(window_number, verbose=0):
-    step = (len_of_msa - 1200) // window_number
+def fill_dl_predict(window_number, window_size, len_of_msa, comb_of_id, org_seq,
+                    dl_model, dl_predict, verbose=0):
+    """Fill predictions using sliding windows."""
+    if len_of_msa > window_size:
+        step = (len_of_msa - window_size) // window_number
+    else:
+        # For very short sequences, use a minimal step
+        step = max(1, (window_size + 10 - window_size) // window_number)
+
     start_idx = 0
-    for i in range(0, window_number):
-        end_idx = start_idx + 1200
-        fill_dl_predict_each_slide_window(start_idx, end_idx, verbose=verbose)
+    for i in range(window_number):
+        end_idx = start_idx + window_size
+        fill_dl_predict_each_slide_window(start_idx, end_idx, window_size, comb_of_id,
+                                         org_seq, dl_model, dl_predict, verbose=verbose)
         start_idx += step
 
 
-def fill_dl_predict_2(window_number, verbose=0):
-    if len_of_msa > 240:
-        step = (len_of_msa - 240) // window_number
-        start_idx = 0
-        for i in range(0, window_number):
-            end_idx = start_idx + 240
-            fill_dl_predict_each_slide_window_2(start_idx, end_idx, verbose=verbose)
-            start_idx += step
+def parse_msa_file(msa_dir):
+    """Parse MSA file and return alignment data and taxa names."""
+    support_format = ['.fas', '.phy', '.fasta', '.phylip']
+    bio_format = ['fasta', 'phylip', 'fasta', 'phylip']
 
+    taxa_name = {}
+    for i in range(len(support_format)):
+        if msa_dir.endswith(support_format[i]):
+            try:
+                alignment = AlignIO.read(open(msa_dir), bio_format[i])
+                len_of_msa = len(alignment[0].seq)
+                taxa_num = len(alignment)
+
+                # Create in-memory file-like object instead of writing to disk
+                save_alignment = StringIO()
+                for record in alignment:
+                    taxa_name[len(taxa_name)] = record.id
+                    save_alignment.write('>' + str(len(taxa_name) - 1) + '\n')
+                    save_alignment.write(str(record.seq) + '\n')
+                save_alignment.seek(0)  # Reset to beginning for reading
+                return save_alignment, taxa_name, len_of_msa, taxa_num
+            except Exception:
+                print('Something wrong about your msa file, please check your msa file')
+                sys.exit(1)
+
+    print('we do not support this format of msa')
+    sys.exit(1)
+
+
+def initialize_quartet_data(taxa_num):
+    """Initialize quartet combinations and related data structures."""
+    start_end_list = [None, None, None]
+    end = -1
+    for i in range(3, 100):
+        start = end + 1
+        end = start + int(comb_math(i, 3)) - 1
+        start_end_list.append((start, end))
+
+    id_for_taxa = list(range(taxa_num))
+    comb_of_id = list(combinations(id_for_taxa, 4))
+    comb_of_id.sort(key=lambda ele: ele[-1])
+
+    leave_node_name = [chr(ord(u'\u4e00') + i) for i in range(taxa_num)]
+    leave_node_comb_name = []
+    dic_for_leave_node_comb_name = {}
+
+    for ele in comb_of_id:
+        term = [chr(ord(u'\u4e00') + id) for id in ele]
+        quartet_key = "".join(term)
+        dic_for_leave_node_comb_name[quartet_key] = len(dic_for_leave_node_comb_name)
+        leave_node_comb_name.append(quartet_key)
+
+    internal_node_name_pool = ['internal_node_' + str(i) for i in range(3, 3000)]
+
+    return (start_end_list, comb_of_id, leave_node_name, leave_node_comb_name,
+            dic_for_leave_node_comb_name, internal_node_name_pool)
+
+
+def write_output(searched_tree, output_path, save_prefix):
+    """Write output tree to file or stdout."""
+    # Ensure output ends with newline
+    if not searched_tree.endswith('\n'):
+        searched_tree += '\n'
+
+    # Determine output destination
+    if output_path is not None:
+        output_file = output_path
+        output_dir = os.path.dirname(output_file)
+        if output_dir:
+            os.makedirs(output_dir, exist_ok=True)
+        with open(output_file, 'a') as f:
+            f.write(searched_tree)
+    elif save_prefix is not None:
+        output_file = f'./dl_output/{save_prefix}.txt'
+        output_dir = os.path.dirname(output_file)
+        if output_dir:
+            os.makedirs(output_dir, exist_ok=True)
+        with open(output_file, 'a') as f:
+            f.write(searched_tree)
     else:
-        step = (250 - 240) // window_number
-        start_idx = 0
-        for i in range(0, window_number):
-            end_idx = start_idx + 240
-            fill_dl_predict_each_slide_window_2(start_idx, end_idx, verbose=verbose)
-            start_idx += step
+        # Default to stdout
+        print(searched_tree, end='')
 
 
 def load_dl_model(len_of_msa, sequence_type, branch_model):
-    '''
+    """
     Load deep learning model based on MSA length and parameters.
     Returns the loaded model and window size (240 or 1200).
-    '''
+    """
     # Get the directory where this script is located
     script_dir = os.path.dirname(os.path.abspath(__file__))
 
@@ -742,16 +721,14 @@ def load_dl_model(len_of_msa, sequence_type, branch_model):
     branch_model_map = {'gamma': 'G', 'uniform': 'U'}
 
     # Select model based on MSA length
-    if len_of_msa <= 1210:
+    if len_of_msa <= MSA_LENGTH_THRESHOLD:
         dl_model = get_dl_model_240()
-        len_dir = 'len_240'
         model_num = '1'
-        window_size = 240
+        window_size = WINDOW_SIZE_SHORT
     else:
         dl_model = get_dl_model_1200()
-        len_dir = 'len_1200'
         model_num = '2'
-        window_size = 1200
+        window_size = WINDOW_SIZE_LONG
 
     # Build and load model path: model/{S|C|N}{1|2}{G|U}.h5
     seq_prefix = seq_type_map.get(sequence_type, 'S')
@@ -780,16 +757,11 @@ if __name__ == '__main__':
     p_input.add_argument("-v", "--verbose", action="store_true", help="Show verbose output including stderr messages")
 
     args = parser.parse_args()
-    
+
     # Validate that quiet and verbose are not both specified
     if args.quiet and args.verbose:
         parser.error("Cannot specify both -q/--quiet and -v/--verbose")
-    
-    # In quiet mode, stderr should already be redirected from early parsing
-    # Store reference for restoration at end
-    if args.quiet:
-        _quiet_original_stderr = _quiet_original_stderr_global
-    
+
     # Determine verbosity level for model.predict() calls
     # 0 = silent, 1 = progress bar, 2 = one line per epoch (not used for predict)
     if args.quiet:
@@ -798,7 +770,7 @@ if __name__ == '__main__':
         predict_verbose = 1  # Show progress bars in verbose mode
     else:
         predict_verbose = 1  # Default: show progress bars (warnings still suppressed via TF_CPP_MIN_LOG_LEVEL)
-    
+
     # Determine MSA file: use -m/--msa_dir or -i/--input if provided, otherwise use positional argument
     if args.msa_dir is not None:
         msa_dir = args.msa_dir
@@ -808,7 +780,7 @@ if __name__ == '__main__':
         msa_dir = args.msa_file
     else:
         parser.error("MSA file must be provided either as positional argument or with -m/--msa_dir or -i/--input")
-    
+
     # Determine output path: use -o/--output if provided, otherwise use positional output argument
     if args.output is not None:
         output_path = args.output
@@ -816,142 +788,44 @@ if __name__ == '__main__':
         output_path = args.output_file
     else:
         output_path = None
-    
+
     save_prefix = args.save_prefix
     beam_size = args.beam_size
     sequence_type = args.sequence_type
     branch_model = args.branch_model
     window_coverage = args.window_coverage
 
-    try:
-        flag = 0
-        support_format = ['.fas', '.phy', '.fasta', 'phylip']
-        bio_format = ['fasta', 'phylip', 'fasta', 'phylip']
+    # Use 'with' statement to ensure stderr is properly restored
+    # The redirector was already entered at module level, so this will properly exit it
+    with _stderr_redirector:
+        # Parse MSA file
+        save_alignment, taxa_name, len_of_msa, taxa_num = parse_msa_file(msa_dir)
 
-        taxa_name = {}
+        # Initialize quartet data structures
+        (start_end_list, comb_of_id, leave_node_name, leave_node_comb_name,
+         dic_for_leave_node_comb_name, internal_node_name_pool) = initialize_quartet_data(taxa_num)
 
-        for i in range(0, len(support_format)):
-            ele = support_format[i]
-            if msa_dir.endswith(ele):
-                flag = 1
-                try:
-                    alignment = AlignIO.read(open(msa_dir), bio_format[i])
-
-                    len_of_msa = len(alignment[0].seq)
-                    taxa_num = len(alignment)
-
-                    # Create in-memory file-like object instead of writing to disk
-                    save_alignment = StringIO()
-                    for record in alignment:
-                        taxa_name[len(taxa_name)] = record.id
-                        save_alignment.write('>'+str(len(taxa_name)-1)+'\n')
-                        save_alignment.write(str(record.seq)+'\n')
-                    save_alignment.seek(0)  # Reset to beginning for reading
-                except:
-                    print('Something wrong about your msa file, please check your msa file')
-                break
-
-        if flag == 0:
-            print('we do not support this format of msa')
-            sys.exit(1)
-
-        #logging.warning(taxa_num)
-
-        start_end_list = [None, None, None]
-
-        end = -1
-        for i in range(3, 100):
-            start = end + 1
-            end = start + int(comb_math(i,3)) - 1
-            start_end_list.append((start,end))
-
-        id_for_taxa = [i for i in range(0, taxa_num)]
-        comb_of_id = list(combinations(id_for_taxa, 4))
-        comb_of_id.sort(key=lambda ele: ele[-1])
-
-        leave_node_id = [i for i in range(0, taxa_num)]
-        leave_node_name = [chr(ord(u'\u4e00')+i) for i in range(0, taxa_num)]
-        leave_node_comb_id = comb_of_id
-
-        leave_node_comb_name = []
-
-        dic_for_leave_node_comb_name = {}
-
-        for ele in leave_node_comb_id:
-            term = [chr(ord(u'\u4e00')+id) for id in ele]
-            dic_for_leave_node_comb_name["".join(term)] = len(dic_for_leave_node_comb_name)
-            leave_node_comb_name.append("".join(term))
-
-        internal_node_name_pool = ['internal_node_' + str(i) for i in range(3, 3000)]
-
+        # Convert alignment to numpy array
         org_seq = get_numpy(save_alignment)
-
-        window_number = 1
 
         # Load deep learning model based on MSA length and parameters
         dl_model, window_size = load_dl_model(len_of_msa, sequence_type, branch_model)
         window_number = int(len_of_msa * float(window_coverage) // window_size + 1)
 
-
+        # Generate predictions
         dl_predict = np.zeros((len(comb_of_id), 3))
-
-        if len_of_msa > 1210:
-            fill_dl_predict(window_number, verbose=predict_verbose)
-        elif len_of_msa <= 1210:
-            fill_dl_predict_2(window_number, verbose=predict_verbose)
-        else:
-            print('current version of fusang do not support this length of MSA')
-            sys.exit(1)
-
+        fill_dl_predict(window_number, window_size, len_of_msa, comb_of_id, org_seq,
+                       dl_model, dl_predict, verbose=predict_verbose)
         dl_predict /= window_number
 
-        #np.save('./dl_predict.npy', dl_predict)
-        #dl_predict = np.load('./dl_predict.npy')
-
         # Generate phylogenetic tree in Newick format
-        if taxa_num > 10:
-            searched_tree = transform_str(gen_phylogenetic_tree_2(dl_predict, int(beam_size)), taxa_name)
-        else:
-            searched_tree = transform_str(gen_phylogenetic_tree(dl_predict, int(beam_size)), taxa_name)
+        use_masking = taxa_num > MIN_TAXA_FOR_MASKING
+        searched_tree_str = gen_phylogenetic_tree(
+            dl_predict, int(beam_size), taxa_num, leave_node_comb_name,
+            dic_for_leave_node_comb_name, internal_node_name_pool,
+            use_masking=use_masking, start_end_list=start_end_list, comb_of_id=comb_of_id
+        )
+        searched_tree = transform_str(searched_tree_str, taxa_name, taxa_num)
 
-        # Ensure output ends with newline
-        if not searched_tree.endswith('\n'):
-            searched_tree += '\n'
-
-        # Determine output destination
-        if output_path is not None:
-            # Use user-specified output path
-            output_file = output_path
-            # Create output directory if it doesn't exist
-            output_dir = os.path.dirname(output_file)
-            if output_dir:
-                os.makedirs(output_dir, exist_ok=True)
-            build_log = open(output_file, 'a')
-            build_log.write(searched_tree)
-            build_log.close()
-        elif save_prefix is not None:
-            # Default behavior: use dl_output directory with save_prefix
-            output_file = './dl_output/{}.txt'.format(save_prefix)
-            # Create output directory if it doesn't exist
-            output_dir = os.path.dirname(output_file)
-            if output_dir:
-                os.makedirs(output_dir, exist_ok=True)
-            build_log = open(output_file, 'a')
-            build_log.write(searched_tree)
-            build_log.close()
-        else:
-            # Default to stdout
-            print(searched_tree, end='')
-    finally:
-        # Restore stderr if it was redirected in quiet mode
-        if args.quiet:
-            sys.stderr = _quiet_original_stderr
-            # Restore file descriptor level redirection
-            if _quiet_original_stderr_fd is not None:
-                try:
-                    os.dup2(_quiet_original_stderr_fd, 2)
-                    os.close(_quiet_original_stderr_fd)
-                    if _quiet_stderr_fd is not None:
-                        os.close(_quiet_stderr_fd)
-                except (OSError, AttributeError):
-                    pass
+        # Write output
+        write_output(searched_tree, output_path, save_prefix)

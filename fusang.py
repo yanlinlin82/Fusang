@@ -1,16 +1,21 @@
+import argparse
+import functools
+import glob
+import math
+import multiprocessing
 import os
 import re
+import shutil
+import subprocess
 import sys
 import warnings
 from io import StringIO
-import argparse
-import math
-import functools
 from itertools import combinations
 from multiprocessing import Pool
-import multiprocessing
+from pathlib import Path
 
 import numpy as np
+import pandas as pd
 from Bio import AlignIO
 from ete3 import Tree
 
@@ -127,7 +132,7 @@ else:
     warnings.filterwarnings('ignore', category=FutureWarning)
 
 import tensorflow as tf
-from keras import layers, models
+from keras import layers, models, optimizers
 
 
 def comb_math(n, m):
@@ -740,92 +745,1103 @@ def load_dl_model(len_of_msa, sequence_type, branch_model):
     return dl_model, window_size
 
 
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser('get_msa_dir')
-    p_input = parser.add_argument_group("INPUT")
-    p_input.add_argument("msa_file", nargs='?', type=str, help="Input MSA file (positional argument)")
-    p_input.add_argument("output_file", nargs='?', type=str, help="Output file in Newick format (positional argument)")
-    p_input.add_argument("-m", "--msa_dir", action="store", type=str, required=False, help="Input MSA file (alternative to positional argument)")
-    p_input.add_argument("-i", "--input", action="store", type=str, required=False, help="Input MSA file (alias for -m/--msa_dir)")
-    p_input.add_argument("-s", "--save_prefix", action="store", type=str, required=False, default=None, help="Prefix of output file (output will be in Newick format)")
-    p_input.add_argument("-o", "--output", action="store", type=str, required=False, default=None, help="Output file path (output will be in Newick format)")
-    p_input.add_argument("-b", "--beam_size", action="store", type=str, default='1', required=False, help="Beam search size (default: 1)")
-    p_input.add_argument("-t", "--sequence_type", action="store", type=str, default='standard', required=False, help="Sequence type for model selection: standard (default), coding, or noncoding")
-    p_input.add_argument("-r", "--branch_model", action="store", type=str, default='gamma', required=False, help="Branch length model for model selection: gamma (default) or uniform")
-    p_input.add_argument("-w", "--window_coverage", action="store", type=str, default='1', required=False, help="Sliding window coverage factor (default: 1)")
-    p_input.add_argument("-q", "--quiet", action="store_true", help="Suppress warning messages")
-    p_input.add_argument("-v", "--verbose", action="store_true", help="Show verbose output including stderr messages")
+# ============================================================================
+# Simulation Data Generation Functions
+# ============================================================================
 
-    args = parser.parse_args()
+def run_simulation_topology(simulation_dir, num_of_topology, taxa_num, range_of_taxa_num,
+                           len_of_msa_upper_bound, len_of_msa_lower_bound, num_of_process,
+                           distribution_of_internal_branch_length, distribution_of_external_branch_length,
+                           range_of_mean_pairwise_divergence, range_of_indel_substitution_rate,
+                           max_indel_length, verbose=False):
+    """
+    Run topology simulation using the simulate_topology.py script.
+
+    Parameters:
+    simulation_dir: Path to simulation directory containing code/
+    num_of_topology: Number of MSAs to simulate
+    taxa_num: Number of taxa in final tree
+    range_of_taxa_num: Range of taxa numbers for sampling [lower, upper]
+    len_of_msa_upper_bound: Upper bound of MSA length
+    len_of_msa_lower_bound: Lower bound of MSA length
+    num_of_process: Number of processes for parallel execution
+    distribution_of_internal_branch_length: Distribution parameters [type, param1, param2]
+    distribution_of_external_branch_length: Distribution parameters [type, param1, param2]
+    range_of_mean_pairwise_divergence: Range [min, max] for mean pairwise divergence
+    range_of_indel_substitution_rate: Range [min, max] for indel substitution rate
+    max_indel_length: Maximum indel length
+    verbose: Whether to show verbose output
+    """
+    code_dir = os.path.join(simulation_dir, 'code')
+    if not os.path.exists(code_dir):
+        raise FileNotFoundError(f"Simulation code directory not found: {code_dir}")
+
+    # Build command
+    cmd = [
+        'python', 'simulate_topology.py',
+        '--num_of_topology', str(num_of_topology),
+        '--taxa_num', str(taxa_num),
+        '--range_of_taxa_num', str(range_of_taxa_num),
+        '--len_of_msa_upper_bound', str(len_of_msa_upper_bound),
+        '--len_of_msa_lower_bound', str(len_of_msa_lower_bound),
+        '--num_of_process', str(num_of_process),
+        '--distribution_of_internal_branch_length', str(distribution_of_internal_branch_length),
+        '--distribution_of_external_branch_length', str(distribution_of_external_branch_length),
+        '--range_of_mean_pairwise_divergence', str(range_of_mean_pairwise_divergence),
+        '--range_of_indel_substitution_rate', str(range_of_indel_substitution_rate),
+        '--max_indel_length', str(max_indel_length)
+    ]
+
+    if verbose:
+        print(f"Running topology simulation: {' '.join(cmd)}")
+
+    result = subprocess.run(cmd, cwd=code_dir, capture_output=not verbose, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(f"Topology simulation failed: {result.stderr}")
+
+    return result
+
+
+def run_indelible(simulation_dir, verbose=False):
+    """
+    Run INDELible to generate sequence alignments.
+
+    Parameters:
+    simulation_dir: Path to simulation directory
+    verbose: Whether to show verbose output
+    """
+    simulate_data_dir = os.path.join(simulation_dir, 'simulate_data')
+    indelible_path = os.path.join(simulation_dir, 'indelible')
+
+    if not os.path.exists(simulate_data_dir):
+        raise FileNotFoundError(f"Simulate data directory not found: {simulate_data_dir}")
+
+    if not os.path.exists(indelible_path):
+        raise FileNotFoundError(f"INDELible executable not found: {indelible_path}")
+
+    # Make indelible executable
+    os.chmod(indelible_path, 0o777)
+
+    # Copy indelible to simulate_data if not already there
+    indelible_dest = os.path.join(simulate_data_dir, 'indelible')
+    if not os.path.exists(indelible_dest):
+        shutil.copy(indelible_path, indelible_dest)
+        os.chmod(indelible_dest, 0o777)
+
+    if verbose:
+        print("Running INDELible...")
+
+    result = subprocess.run('./indelible', cwd=simulate_data_dir, capture_output=not verbose, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(f"INDELible execution failed: {result.stderr}")
+
+    return result
+
+
+def extract_fasta_data(simulation_dir, max_length=None, verbose=False):
+    """
+    Extract FASTA data from simulation output.
+
+    Parameters:
+    simulation_dir: Path to simulation directory
+    max_length: Maximum MSA length to keep (None for no limit)
+    verbose: Whether to show verbose output
+    """
+    code_dir = os.path.join(simulation_dir, 'code')
+    if not os.path.exists(code_dir):
+        raise FileNotFoundError(f"Simulation code directory not found: {code_dir}")
+
+    cmd = ['python', 'extract_fasta_data.py']
+    if max_length is not None:
+        cmd.extend(['--length', str(max_length)])
+
+    if verbose:
+        print(f"Extracting FASTA data: {' '.join(cmd)}")
+
+    result = subprocess.run(cmd, cwd=code_dir, capture_output=not verbose, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(f"FASTA extraction failed: {result.stderr}")
+
+    return result
+
+
+def generate_numpy_data(simulation_dir, verbose=False):
+    """
+    Generate numpy training data from FASTA files.
+
+    Parameters:
+    simulation_dir: Path to simulation directory
+    verbose: Whether to show verbose output
+    """
+    code_dir = os.path.join(simulation_dir, 'code')
+    if not os.path.exists(code_dir):
+        raise FileNotFoundError(f"Simulation code directory not found: {code_dir}")
+
+    # Copy trees.txt if it exists
+    trees_src = os.path.join(simulation_dir, 'simulate_data', 'trees.txt')
+    trees_dest = os.path.join(simulation_dir, 'label_file', 'trees.txt')
+    if os.path.exists(trees_src):
+        os.makedirs(os.path.dirname(trees_dest), exist_ok=True)
+        shutil.copy(trees_src, trees_dest)
+
+    cmd = ['python', 'gen_numpy.py']
+
+    if verbose:
+        print(f"Generating numpy data: {' '.join(cmd)}")
+
+    result = subprocess.run(cmd, cwd=code_dir, capture_output=not verbose, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(f"Numpy data generation failed: {result.stderr}")
+
+    return result
+
+
+def run_full_simulation(simulation_dir, num_of_topology, taxa_num, range_of_taxa_num,
+                       len_of_msa_upper_bound, len_of_msa_lower_bound, num_of_process,
+                       distribution_of_internal_branch_length, distribution_of_external_branch_length,
+                       range_of_mean_pairwise_divergence, range_of_indel_substitution_rate,
+                       max_indel_length, max_length=None, cleanup=True, verbose=False,
+                       run_inference=False, evaluate_results=False, output_dir=None,
+                       sequence_type='standard', branch_model='gamma', beam_size=1, window_coverage=1):
+    """
+    Run the complete simulation pipeline.
+
+    Parameters:
+    simulation_dir: Path to simulation directory
+    num_of_topology: Number of MSAs to simulate
+    taxa_num: Number of taxa in final tree
+    range_of_taxa_num: Range of taxa numbers [lower, upper]
+    len_of_msa_upper_bound: Upper bound of MSA length
+    len_of_msa_lower_bound: Lower bound of MSA length
+    num_of_process: Number of processes for parallel execution
+    distribution_of_internal_branch_length: Distribution parameters [type, param1, param2]
+    distribution_of_external_branch_length: Distribution parameters [type, param1, param2]
+    range_of_mean_pairwise_divergence: Range [min, max] for mean pairwise divergence
+    range_of_indel_substitution_rate: Range [min, max] for indel substitution rate
+    max_indel_length: Maximum indel length
+    max_length: Maximum MSA length to keep (None for no limit)
+    cleanup: Whether to remove simulate_data directory after completion
+    verbose: Whether to show verbose output
+    """
+    if verbose:
+        print("Starting full simulation pipeline...")
+
+    # Step 1: Generate topologies
+    if verbose:
+        print("Step 1: Generating topologies...")
+    run_simulation_topology(
+        simulation_dir, num_of_topology, taxa_num, range_of_taxa_num,
+        len_of_msa_upper_bound, len_of_msa_lower_bound, num_of_process,
+        distribution_of_internal_branch_length, distribution_of_external_branch_length,
+        range_of_mean_pairwise_divergence, range_of_indel_substitution_rate,
+        max_indel_length, verbose=verbose
+    )
+
+    # Step 2: Run INDELible
+    if verbose:
+        print("Step 2: Running INDELible...")
+    run_indelible(simulation_dir, verbose=verbose)
+
+    # Step 3: Extract FASTA data
+    if verbose:
+        print("Step 3: Extracting FASTA data...")
+    extract_fasta_data(simulation_dir, max_length=max_length, verbose=verbose)
+
+    # Step 4: Copy trees.txt
+    trees_src = os.path.join(simulation_dir, 'simulate_data', 'trees.txt')
+    trees_dest = os.path.join(simulation_dir, 'label_file', 'trees.txt')
+    if os.path.exists(trees_src):
+        os.makedirs(os.path.dirname(trees_dest), exist_ok=True)
+        shutil.copy(trees_src, trees_dest)
+
+    # Step 5: Generate numpy data
+    if verbose:
+        print("Step 4: Generating numpy training data...")
+    generate_numpy_data(simulation_dir, verbose=verbose)
+
+    # Step 6: Run inference and evaluation if requested
+    evaluation_results = None
+    if run_inference or (evaluate_results is True):
+        if verbose:
+            print("Step 5: Running inference and evaluation...")
+
+        fasta_dir = os.path.join(simulation_dir, 'fasta_file')
+        trees_file = os.path.join(simulation_dir, 'label_file', 'trees.txt')
+
+        if not os.path.exists(trees_file):
+            # Try to get from simulate_data if cleanup hasn't happened yet
+            trees_file_alt = os.path.join(simulation_dir, 'simulate_data', 'trees.txt')
+            if os.path.exists(trees_file_alt):
+                trees_file = trees_file_alt
+
+        if evaluate_results:
+            evaluation_results = evaluate_simulation_results(
+                fasta_dir, trees_file, output_dir=output_dir,
+                sequence_type=sequence_type, branch_model=branch_model,
+                beam_size=beam_size, window_coverage=window_coverage, verbose=verbose
+            )
+
+            if verbose:
+                stats = evaluation_results['statistics']
+                print(f"\nEvaluation Results:")
+                print(f"  Total files: {stats['total_files']}")
+                print(f"  Successful: {stats['successful_inferences']}")
+                print(f"  Failed: {stats['failed_inferences']}")
+                if stats['successful_inferences'] > 0:
+                    print(f"  Mean RF distance: {stats['mean_rf_distance']:.4f} ± {stats['std_rf_distance']:.4f}")
+                    print(f"  Mean normalized RF: {stats['mean_normalized_rf']:.4f} ± {stats['std_normalized_rf']:.4f}")
+
+    # Step 7: Cleanup if requested
+    if cleanup:
+        simulate_data_dir = os.path.join(simulation_dir, 'simulate_data')
+        if os.path.exists(simulate_data_dir):
+            if verbose:
+                print("Step 6: Cleaning up temporary files...")
+            shutil.rmtree(simulate_data_dir)
+
+    if verbose:
+        print("Simulation pipeline completed successfully!")
+
+    result = {
+        'numpy_seq_dir': os.path.join(simulation_dir, 'numpy_file', 'seq'),
+        'numpy_label_dir': os.path.join(simulation_dir, 'numpy_file', 'label'),
+        'fasta_dir': os.path.join(simulation_dir, 'fasta_file'),
+        'trees_file': os.path.join(simulation_dir, 'label_file', 'trees.txt')
+    }
+
+    if evaluation_results is not None:
+        result['evaluation'] = evaluation_results
+
+    return result
+
+
+# ============================================================================
+# Inference and Evaluation Functions
+# ============================================================================
+
+def read_true_trees(trees_file):
+    """
+    Read true trees from trees.txt file generated by INDELible.
+
+    Parameters:
+    trees_file: Path to trees.txt file
+
+    Returns:
+    Dictionary mapping file names to true tree Newick strings
+    """
+    if not os.path.exists(trees_file):
+        raise FileNotFoundError(f"Trees file not found: {trees_file}")
+
+    # Read trees.txt (skip first 5 lines, tab-separated, column 8 contains tree)
+    csv_data = pd.read_table(trees_file, skiprows=5, sep='\t', header=None)
+    file_names = list(csv_data[0])
+    true_trees = list(csv_data[8])
+
+    tree_dict = {}
+    for i in range(len(file_names)):
+        tree_dict[file_names[i]] = true_trees[i].strip()
+
+    return tree_dict
+
+
+def infer_tree_from_msa(msa_file, sequence_type='standard', branch_model='gamma',
+                        beam_size=1, window_coverage=1, verbose=False):
+    """
+    Infer phylogenetic tree from a single MSA file.
+
+    Parameters:
+    msa_file: Path to MSA file
+    sequence_type: Sequence type for model selection
+    branch_model: Branch length model for model selection
+    beam_size: Beam search size
+    window_coverage: Sliding window coverage factor
+    verbose: Whether to show verbose output
+
+    Returns:
+    Inferred tree in Newick format (string)
+    """
+    # Parse MSA file
+    save_alignment, taxa_name, len_of_msa, taxa_num = parse_msa_file(msa_file)
+
+    # Initialize quartet data structures
+    (start_end_list, comb_of_id, leave_node_name, leave_node_comb_name,
+     dic_for_leave_node_comb_name, internal_node_name_pool) = initialize_quartet_data(taxa_num)
+
+    # Convert alignment to numpy array
+    org_seq = get_numpy(save_alignment)
+
+    # Load deep learning model
+    dl_model, window_size = load_dl_model(len_of_msa, sequence_type, branch_model)
+    window_number = int(len_of_msa * float(window_coverage) // window_size + 1)
+
+    # Generate predictions
+    dl_predict = np.zeros((len(comb_of_id), 3))
+    predict_verbose = 1 if verbose else 0
+    fill_dl_predict(window_number, window_size, len_of_msa, comb_of_id, org_seq,
+                   dl_model, dl_predict, verbose=predict_verbose)
+    dl_predict /= window_number
+
+    # Generate phylogenetic tree
+    use_masking = taxa_num > MIN_TAXA_FOR_MASKING
+    searched_tree_str = gen_phylogenetic_tree(
+        dl_predict, int(beam_size), taxa_num, leave_node_comb_name,
+        dic_for_leave_node_comb_name, internal_node_name_pool,
+        use_masking=use_masking, start_end_list=start_end_list, comb_of_id=comb_of_id
+    )
+    searched_tree = transform_str(searched_tree_str, taxa_name, taxa_num)
+
+    return searched_tree.strip()
+
+
+def calculate_rf_distance(tree1_str, tree2_str, unrooted=True):
+    """
+    Calculate Robinson-Foulds distance between two trees.
+
+    Parameters:
+    tree1_str: First tree in Newick format (string)
+    tree2_str: Second tree in Newick format (string)
+    unrooted: Whether trees are unrooted (default: True)
+
+    Returns:
+    RF distance (int) and normalized RF distance (float)
+    """
+    try:
+        tree1 = Tree(tree1_str)
+        tree2 = Tree(tree2_str)
+
+        rf_distance, max_rf = tree1.robinson_foulds(tree2, unrooted_trees=unrooted)
+        normalized_rf = rf_distance / max_rf if max_rf > 0 else 0.0
+
+        return rf_distance, normalized_rf, max_rf
+    except Exception as e:
+        return None, None, None
+
+
+def evaluate_simulation_results(fasta_dir, trees_file, output_dir=None,
+                                sequence_type='standard', branch_model='gamma',
+                                beam_size=1, window_coverage=1, verbose=False):
+    """
+    Evaluate inference results on simulated data by comparing with true trees.
+
+    Parameters:
+    fasta_dir: Directory containing FASTA files
+    trees_file: Path to trees.txt file with true trees
+    output_dir: Directory to save inference results (None to skip saving)
+    sequence_type: Sequence type for model selection
+    branch_model: Branch length model for model selection
+    beam_size: Beam search size
+    window_coverage: Sliding window coverage factor
+    verbose: Whether to show verbose output
+
+    Returns:
+    Dictionary containing evaluation results
+    """
+    # Read true trees
+    if verbose:
+        print("Reading true trees...")
+    true_trees = read_true_trees(trees_file)
+
+    # Get all FASTA files
+    fasta_files = sorted(glob.glob(os.path.join(fasta_dir, '*.fas')))
+    fasta_files = [f for f in fasta_files if 'TRUE' in os.path.basename(f)]
+
+    if len(fasta_files) == 0:
+        raise ValueError(f"No FASTA files found in {fasta_dir}")
+
+    if verbose:
+        print(f"Found {len(fasta_files)} FASTA files to process...")
+
+    # Create output directory if needed
+    if output_dir is not None:
+        os.makedirs(output_dir, exist_ok=True)
+        inferred_trees_file = os.path.join(output_dir, 'inferred_trees.txt')
+        results_file = os.path.join(output_dir, 'evaluation_results.txt')
+
+    results = []
+    inferred_trees = {}
+
+    # Process each FASTA file
+    for i, fasta_file in enumerate(fasta_files):
+        if verbose and (i + 1) % 10 == 0:
+            print(f"Processing {i + 1}/{len(fasta_files)}...")
+
+        # Get file name (without extension)
+        file_basename = os.path.basename(fasta_file)
+        file_name = file_basename.replace('_TRUE.fas', '').replace('.fas', '')
+
+        # Get true tree
+        if file_name not in true_trees:
+            if verbose:
+                print(f"Warning: No true tree found for {file_name}, skipping...")
+            continue
+
+        true_tree_str = true_trees[file_name]
+
+        try:
+            # Infer tree
+            inferred_tree_str = infer_tree_from_msa(
+                fasta_file, sequence_type=sequence_type, branch_model=branch_model,
+                beam_size=beam_size, window_coverage=window_coverage, verbose=False
+            )
+
+            # Calculate RF distance
+            rf_distance, normalized_rf, max_rf = calculate_rf_distance(
+                true_tree_str, inferred_tree_str, unrooted=True
+            )
+
+            if rf_distance is not None:
+                result = {
+                    'file_name': file_name,
+                    'rf_distance': rf_distance,
+                    'normalized_rf': normalized_rf,
+                    'max_rf': max_rf,
+                    'success': True
+                }
+                inferred_trees[file_name] = inferred_tree_str
+            else:
+                result = {
+                    'file_name': file_name,
+                    'rf_distance': None,
+                    'normalized_rf': None,
+                    'max_rf': None,
+                    'success': False
+                }
+
+            results.append(result)
+
+        except Exception as e:
+            if verbose:
+                print(f"Error processing {file_name}: {str(e)}")
+            results.append({
+                'file_name': file_name,
+                'rf_distance': None,
+                'normalized_rf': None,
+                'max_rf': None,
+                'success': False,
+                'error': str(e)
+            })
+
+    # Calculate statistics
+    successful_results = [r for r in results if r['success']]
+    if len(successful_results) > 0:
+        rf_distances = [r['rf_distance'] for r in successful_results]
+        normalized_rfs = [r['normalized_rf'] for r in successful_results]
+
+        stats = {
+            'total_files': len(results),
+            'successful_inferences': len(successful_results),
+            'failed_inferences': len(results) - len(successful_results),
+            'mean_rf_distance': np.mean(rf_distances),
+            'std_rf_distance': np.std(rf_distances),
+            'min_rf_distance': np.min(rf_distances),
+            'max_rf_distance': np.max(rf_distances),
+            'mean_normalized_rf': np.mean(normalized_rfs),
+            'std_normalized_rf': np.std(normalized_rfs),
+            'min_normalized_rf': np.min(normalized_rfs),
+            'max_normalized_rf': np.max(normalized_rfs)
+        }
+    else:
+        stats = {
+            'total_files': len(results),
+            'successful_inferences': 0,
+            'failed_inferences': len(results),
+            'mean_rf_distance': None,
+            'std_rf_distance': None,
+            'min_rf_distance': None,
+            'max_rf_distance': None,
+            'mean_normalized_rf': None,
+            'std_normalized_rf': None,
+            'min_normalized_rf': None,
+            'max_normalized_rf': None
+        }
+
+    # Save results if output directory provided
+    if output_dir is not None:
+        # Save inferred trees
+        with open(inferred_trees_file, 'w') as f:
+            for file_name, tree_str in inferred_trees.items():
+                f.write(f"{file_name}\t{tree_str}\n")
+
+        # Save evaluation results
+        with open(results_file, 'w') as f:
+            f.write("Evaluation Results\n")
+            f.write("=" * 50 + "\n\n")
+            f.write(f"Total files processed: {stats['total_files']}\n")
+            f.write(f"Successful inferences: {stats['successful_inferences']}\n")
+            f.write(f"Failed inferences: {stats['failed_inferences']}\n\n")
+
+            if stats['successful_inferences'] > 0:
+                f.write("RF Distance Statistics:\n")
+                f.write(f"  Mean: {stats['mean_rf_distance']:.4f}\n")
+                f.write(f"  Std:  {stats['std_rf_distance']:.4f}\n")
+                f.write(f"  Min:  {stats['min_rf_distance']:.0f}\n")
+                f.write(f"  Max:  {stats['max_rf_distance']:.0f}\n\n")
+
+                f.write("Normalized RF Distance Statistics:\n")
+                f.write(f"  Mean: {stats['mean_normalized_rf']:.4f}\n")
+                f.write(f"  Std:  {stats['std_normalized_rf']:.4f}\n")
+                f.write(f"  Min:  {stats['min_normalized_rf']:.4f}\n")
+                f.write(f"  Max:  {stats['max_normalized_rf']:.4f}\n\n")
+
+            f.write("\nDetailed Results:\n")
+            f.write("-" * 50 + "\n")
+            for result in results:
+                f.write(f"{result['file_name']}\t")
+                if result['success']:
+                    f.write(f"RF={result['rf_distance']}\tNormRF={result['normalized_rf']:.4f}\n")
+                else:
+                    f.write(f"FAILED")
+                    if 'error' in result:
+                        f.write(f": {result['error']}")
+                    f.write("\n")
+
+    return {
+        'results': results,
+        'statistics': stats,
+        'inferred_trees': inferred_trees
+    }
+
+
+# ============================================================================
+# Model Training Functions
+# ============================================================================
+
+def load_training_data(numpy_seq_dir, numpy_label_dir, train_ratio=0.8, val_ratio=0.1, test_ratio=0.1, verbose=False):
+    """
+    Load training data from numpy files.
+
+    Parameters:
+    numpy_seq_dir: Directory containing sequence numpy files
+    numpy_label_dir: Directory containing label numpy files
+    train_ratio: Ratio of data for training
+    val_ratio: Ratio of data for validation
+    test_ratio: Ratio of data for testing
+    verbose: Whether to show verbose output
+
+    Returns:
+    (X_train, y_train), (X_val, y_val), (X_test, y_test)
+    """
+    if abs(train_ratio + val_ratio + test_ratio - 1.0) > 1e-6:
+        raise ValueError("train_ratio + val_ratio + test_ratio must equal 1.0")
+
+    # Get all numpy files
+    seq_files = sorted([f for f in os.listdir(numpy_seq_dir) if f.endswith('.npy')])
+    label_files = sorted([f for f in os.listdir(numpy_label_dir) if f.endswith('.npy')])
+
+    if len(seq_files) != len(label_files):
+        raise ValueError(f"Mismatch: {len(seq_files)} sequence files but {len(label_files)} label files")
+
+    if verbose:
+        print(f"Loading {len(seq_files)} data files...")
+
+    # Load all data
+    X_all = []
+    y_all = []
+
+    for seq_file, label_file in zip(seq_files, label_files):
+        seq_path = os.path.join(numpy_seq_dir, seq_file)
+        label_path = os.path.join(numpy_label_dir, label_file)
+
+        X = np.load(seq_path)
+        y = np.load(label_path)
+
+        # Reshape if needed: X should be (1, 4, length) -> (4, length, 1)
+        if len(X.shape) == 3 and X.shape[0] == 1:
+            X = X[0]  # Remove batch dimension
+        if X.shape[0] == 4 and len(X.shape) == 2:
+            X = np.expand_dims(X, axis=-1)  # Add channel dimension
+
+        # Handle label: ensure it's a scalar integer
+        if isinstance(y, np.ndarray):
+            if y.size == 1:
+                y = int(y.item())
+            elif len(y.shape) == 0:
+                y = int(y)
+            else:
+                raise ValueError(f"Unexpected label shape: {y.shape}")
+
+        X_all.append(X)
+        y_all.append(y)
+
+    # Convert to numpy arrays
+    # X_all should be list of (4, length, 1) arrays - we'll stack them
+    # y_all should be list of integers
+    X_all = np.array(X_all)  # Shape: (n_samples, 4, length, 1)
+    y_all = np.array(y_all, dtype=np.int32)  # Shape: (n_samples,)
+
+    # Shuffle
+    indices = np.random.permutation(len(X_all))
+    X_all = X_all[indices]
+    y_all = y_all[indices]
+
+    # Split into train/val/test
+    n_total = len(X_all)
+    n_train = int(n_total * train_ratio)
+    n_val = int(n_total * val_ratio)
+
+    X_train = X_all[:n_train]
+    y_train = y_all[:n_train]
+    X_val = X_all[n_train:n_train + n_val]
+    y_val = y_all[n_train:n_train + n_val]
+    X_test = X_all[n_train + n_val:]
+    y_test = y_all[n_train + n_val:]
+
+    if verbose:
+        print(f"Training set: {len(X_train)} samples")
+        print(f"Validation set: {len(X_val)} samples")
+        print(f"Test set: {len(X_test)} samples")
+
+    return (X_train, y_train), (X_val, y_val), (X_test, y_test)
+
+
+def train_model(model, X_train, y_train, X_val, y_val, epochs=50, batch_size=32,
+                learning_rate=0.001, model_save_path=None, verbose=1):
+    """
+    Train a deep learning model.
+
+    Parameters:
+    model: Keras model to train
+    X_train: Training sequences
+    y_train: Training labels
+    X_val: Validation sequences
+    y_val: Validation labels
+    epochs: Number of training epochs
+    batch_size: Batch size for training
+    learning_rate: Learning rate
+    model_save_path: Path to save trained model (None to not save)
+    verbose: Verbosity level (0=silent, 1=progress, 2=one line per epoch)
+
+    Returns:
+    Training history
+    """
+    # Compile model
+    model.compile(
+        optimizer=optimizers.Adam(learning_rate=learning_rate),
+        loss='sparse_categorical_crossentropy',
+        metrics=['accuracy']
+    )
+
+    # Train model
+    history = model.fit(
+        X_train, y_train,
+        validation_data=(X_val, y_val),
+        epochs=epochs,
+        batch_size=batch_size,
+        verbose=verbose
+    )
+
+    # Save model if path provided
+    if model_save_path is not None:
+        os.makedirs(os.path.dirname(model_save_path), exist_ok=True)
+        model.save_weights(model_save_path)
+        if verbose >= 1:
+            print(f"Model saved to {model_save_path}")
+
+    return history
+
+
+def train_fusang_model(numpy_seq_dir, numpy_label_dir, window_size=240, epochs=50,
+                       batch_size=32, learning_rate=0.001, train_ratio=0.8, val_ratio=0.1,
+                       model_save_path=None, verbose=1):
+    """
+    Train a Fusang model from numpy data.
+
+    Parameters:
+    numpy_seq_dir: Directory containing sequence numpy files
+    numpy_label_dir: Directory containing label numpy files
+    window_size: Window size (240 or 1200)
+    epochs: Number of training epochs
+    batch_size: Batch size for training
+    learning_rate: Learning rate
+    train_ratio: Ratio of data for training
+    val_ratio: Ratio of data for validation
+    model_save_path: Path to save trained model
+    verbose: Verbosity level
+
+    Returns:
+    Trained model and training history
+    """
+    # Load data
+    (X_train, y_train), (X_val, y_val), (X_test, y_test) = load_training_data(
+        numpy_seq_dir, numpy_label_dir, train_ratio=train_ratio, val_ratio=val_ratio,
+        test_ratio=1.0 - train_ratio - val_ratio, verbose=verbose >= 1
+    )
+
+    # Create model based on window size
+    if window_size == 240:
+        model = get_dl_model_240()
+    elif window_size == 1200:
+        model = get_dl_model_1200()
+    else:
+        raise ValueError(f"Unsupported window size: {window_size}. Must be 240 or 1200.")
+
+    # Train model
+    history = train_model(
+        model, X_train, y_train, X_val, y_val,
+        epochs=epochs, batch_size=batch_size, learning_rate=learning_rate,
+        model_save_path=model_save_path, verbose=verbose
+    )
+
+    # Evaluate on test set
+    if verbose >= 1:
+        test_loss, test_acc = model.evaluate(X_test, y_test, verbose=0)
+        print(f"Test accuracy: {test_acc:.4f}")
+
+    return model, history
+
+
+if __name__ == '__main__':
+    # Check if first argument is a subcommand or a file path
+
+    # Determine if first argument is a subcommand or a file path
+    first_arg = sys.argv[1] if len(sys.argv) > 1 else None
+    has_subcommand = first_arg in ['simulate', 'train', 'infer', 'evaluate']
+    is_file_path = first_arg and not first_arg.startswith('-') and not has_subcommand and (
+        os.path.exists(first_arg) or '/' in first_arg or '\\' in first_arg or first_arg.endswith(('.fas', '.fasta', '.fa', '.fas', '.phy', '.phylip'))
+    )
+
+    # Check if --help or -h is explicitly requested
+    show_full_help = '-h' in sys.argv or '--help' in sys.argv
+
+    # Create simplified help message function
+    def print_simplified_help():
+        print("Fusang: Deep learning-based phylogenetic tree inference")
+        print("\nusage: fusang [-h] <subcommand> ...\n")
+        print("Subcommands:")
+        print("  infer      Infer phylogenetic tree from MSA")
+        print("  simulate   Generate simulation data for training")
+        print("  train      Train a Fusang model")
+        print("  evaluate   Evaluate inference results on simulated data")
+        print("\nLegacy mode (backward compatible):")
+        print("  fusang input.fasta [output.tree]")
+        print("  (if output.tree is not specified, output goes to stdout)")
+        print("\nUse 'fusang --help' for detailed help, or 'fusang <subcommand> --help' for subcommand help.")
+
+    parser = argparse.ArgumentParser(
+        'fusang',
+        description='Fusang: Deep learning-based phylogenetic tree inference',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog='''
+Examples:
+  # Infer phylogenetic tree (using subcommand):
+  fusang infer -i input.fasta -o output.tree
+
+  # Infer phylogenetic tree (legacy mode, backward compatible):
+  fusang input.fasta output.tree
+
+  # Generate simulation data:
+  fusang simulate --simulation_dir ./simulation --num_of_topology 20 --taxa_num 5 ...
+
+  # Train a model:
+  fusang train --numpy_seq_dir ./data/seq --numpy_label_dir ./data/label --model_save_path ./model.h5 ...
+
+  # Evaluate inference results:
+  fusang evaluate --fasta_dir ./fasta --trees_file ./trees.txt --output_dir ./results ...
+
+For detailed help on a subcommand, use: fusang <subcommand> --help
+        '''
+    )
+
+    # Global arguments
+    parser.add_argument("-q", "--quiet", action="store_true", help="Suppress warning messages")
+    parser.add_argument("-v", "--verbose", action="store_true", help="Show verbose output including stderr messages")
+
+    # Always create subparsers to show them in help (but not required for backward compatibility)
+    subparsers = parser.add_subparsers(dest='mode', help='Operation mode', metavar='{infer,simulate,train,evaluate}')
+    # If first argument looks like a file path, make subcommand optional
+    if is_file_path:
+        subparsers.required = False
+
+    # Inference mode
+    infer_parser = subparsers.add_parser(
+        'infer',
+        help='Infer phylogenetic tree from MSA',
+        description='Infer phylogenetic tree from multiple sequence alignment (MSA) using deep learning.',
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    p_input = infer_parser.add_argument_group("Input/Output")
+    p_input.add_argument("msa_file", nargs='?', type=str, metavar='MSA_FILE', help="Input MSA file (positional)")
+    p_input.add_argument("output_file", nargs='?', type=str, metavar='OUTPUT_FILE', help="Output tree file in Newick format (positional, optional; if not specified, output to stdout)")
+    p_input.add_argument("-i", "--input", dest="msa_dir", type=str, help="Input MSA file path")
+    p_input.add_argument("-m", "--msa_dir", type=str, help=argparse.SUPPRESS)  # Hidden alias for backward compatibility
+    p_input.add_argument("-o", "--output", type=str, help="Output tree file path (Newick format)")
+    p_input.add_argument("-s", "--save_prefix", type=str, help="Output file prefix (saved to ./dl_output/<prefix>.txt)")
+
+    p_params = infer_parser.add_argument_group("Inference Parameters")
+    p_params.add_argument("-b", "--beam_size", type=str, default='1', help="Beam search size (default: 1)")
+    p_params.add_argument("-t", "--sequence_type", type=str, default='standard', choices=['standard', 'coding', 'noncoding'], help="Sequence type for model selection (default: standard)")
+    p_params.add_argument("-r", "--branch_model", type=str, default='gamma', choices=['gamma', 'uniform'], help="Branch length model (default: gamma)")
+    p_params.add_argument("-w", "--window_coverage", type=str, default='1', help="Sliding window coverage factor (default: 1)")
+
+    # Simulation mode
+    sim_parser = subparsers.add_parser(
+        'simulate',
+        help='Generate simulation data for training',
+        description='Generate simulated phylogenetic data for model training using INDELible.',
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    sim_parser.add_argument("--simulation_dir", type=str, required=True, help="Path to simulation directory containing code/ and indelible")
+    sim_parser.add_argument("--num_of_topology", type=int, required=True, help="Number of MSAs to simulate")
+    sim_parser.add_argument("--taxa_num", type=int, required=True, help="Number of taxa in final tree")
+    sim_parser.add_argument("--range_of_taxa_num", type=str, required=True, help="Range of taxa numbers [lower, upper] (e.g., '[5, 40]')")
+    sim_parser.add_argument("--len_of_msa_upper_bound", type=int, required=True, help="Upper bound of MSA length")
+    sim_parser.add_argument("--len_of_msa_lower_bound", type=int, required=True, help="Lower bound of MSA length")
+    sim_parser.add_argument("--num_of_process", type=int, default=24, help="Number of processes for parallel execution (default: 24)")
+    sim_parser.add_argument("--distribution_of_internal_branch_length", type=str, default='[1, 0.5, 0.3]', help="Internal branch length distribution [type, param1, param2] (default: '[1, 0.5, 0.3]')")
+    sim_parser.add_argument("--distribution_of_external_branch_length", type=str, default='[1, 0.5, 0.3]', help="External branch length distribution [type, param1, param2] (default: '[1, 0.5, 0.3]')")
+    sim_parser.add_argument("--range_of_mean_pairwise_divergence", type=str, default='[0.03, 0.3]', help="Range of mean pairwise divergence [min, max] (default: '[0.03, 0.3]')")
+    sim_parser.add_argument("--range_of_indel_substitution_rate", type=str, default='[0.01, 0.25]', help="Range of indel substitution rate [min, max] (default: '[0.01, 0.25]')")
+    sim_parser.add_argument("--max_indel_length", type=int, required=True, help="Maximum indel length")
+    sim_parser.add_argument("--max_length", type=int, default=None, help="Maximum MSA length to keep (default: no limit)")
+    sim_parser.add_argument("--no-cleanup", action="store_true", help="Do not remove simulate_data directory after completion")
+    sim_parser.add_argument("--evaluate", action="store_true", help="Run inference and evaluation on generated data")
+    sim_parser.add_argument("--evaluation_output", type=str, default=None, help="Directory to save evaluation results (default: simulation_dir/evaluation)")
+    sim_parser.add_argument("--sequence_type", type=str, default='standard', help="Sequence type for inference: standard (default), coding, or noncoding")
+    sim_parser.add_argument("--branch_model", type=str, default='gamma', help="Branch length model for inference: gamma (default) or uniform")
+    sim_parser.add_argument("--beam_size", type=int, default=1, help="Beam search size for inference (default: 1)")
+    sim_parser.add_argument("--window_coverage", type=float, default=1.0, help="Sliding window coverage factor for inference (default: 1.0)")
+
+    # Evaluation mode (standalone)
+    eval_parser = subparsers.add_parser(
+        'evaluate',
+        help='Evaluate inference results on simulated data',
+        description='Evaluate inference accuracy by comparing predicted trees with true trees using RF distance.',
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    eval_parser.add_argument("--fasta_dir", type=str, required=True, help="Directory containing FASTA files")
+    eval_parser.add_argument("--trees_file", type=str, required=True, help="Path to trees.txt file with true trees")
+    eval_parser.add_argument("--output_dir", type=str, default=None, help="Directory to save evaluation results (default: current directory)")
+    eval_parser.add_argument("--sequence_type", type=str, default='standard', help="Sequence type for inference: standard (default), coding, or noncoding")
+    eval_parser.add_argument("--branch_model", type=str, default='gamma', help="Branch length model for inference: gamma (default) or uniform")
+    eval_parser.add_argument("--beam_size", type=int, default=1, help="Beam search size for inference (default: 1)")
+    eval_parser.add_argument("--window_coverage", type=float, default=1.0, help="Sliding window coverage factor for inference (default: 1.0)")
+
+    # Training mode
+    train_parser = subparsers.add_parser(
+        'train',
+        help='Train a Fusang model',
+        description='Train deep learning models for quartet topology prediction.',
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    train_parser.add_argument("--numpy_seq_dir", type=str, required=True, help="Directory containing sequence numpy files")
+    train_parser.add_argument("--numpy_label_dir", type=str, required=True, help="Directory containing label numpy files")
+    train_parser.add_argument("--window_size", type=int, choices=[240, 1200], default=240, help="Window size for model (default: 240)")
+    train_parser.add_argument("--epochs", type=int, default=50, help="Number of training epochs (default: 50)")
+    train_parser.add_argument("--batch_size", type=int, default=32, help="Batch size for training (default: 32)")
+    train_parser.add_argument("--learning_rate", type=float, default=0.001, help="Learning rate (default: 0.001)")
+    train_parser.add_argument("--train_ratio", type=float, default=0.8, help="Ratio of data for training (default: 0.8)")
+    train_parser.add_argument("--val_ratio", type=float, default=0.1, help="Ratio of data for validation (default: 0.1)")
+    train_parser.add_argument("--model_save_path", type=str, required=True, help="Path to save trained model weights (.h5 file)")
+
+    # Backward compatibility: add inference arguments to main parser for old-style usage
+    # These appear in help when no subcommand is detected, for legacy mode support
+    if not has_subcommand:
+        legacy_group = parser.add_argument_group(
+            "Arguments for legacy mode (when no subcommand is specified)",
+            "These arguments are used when running in backward-compatible mode: fusang input.fasta output.tree"
+        )
+        legacy_group.add_argument("msa_file", nargs='?', type=str, metavar='MSA_FILE', help="Input MSA file (positional)")
+        legacy_group.add_argument("output_file", nargs='?', type=str, metavar='OUTPUT_FILE', help="Output tree file in Newick format (positional, optional; if not specified, output to stdout)")
+        legacy_group.add_argument("-i", "--input", dest="msa_dir", type=str, help="Input MSA file (alternative to positional)")
+        legacy_group.add_argument("-m", "--msa_dir", type=str, help=argparse.SUPPRESS)  # Hidden alias
+        legacy_group.add_argument("-o", "--output", type=str, default=None, help="Output tree file path (alternative to positional)")
+        legacy_group.add_argument("-s", "--save_prefix", type=str, default=None, help="Output file prefix (saved to ./dl_output/<prefix>.txt)")
+        legacy_group.add_argument("-b", "--beam_size", type=str, default='1', help="Beam search size (default: 1)")
+        legacy_group.add_argument("-t", "--sequence_type", type=str, default='standard', choices=['standard', 'coding', 'noncoding'], help="Sequence type (default: standard)")
+        legacy_group.add_argument("-r", "--branch_model", type=str, default='gamma', choices=['gamma', 'uniform'], help="Branch length model (default: gamma)")
+        legacy_group.add_argument("-w", "--window_coverage", type=str, default='1', help="Sliding window coverage factor (default: 1)")
+
+    # Parse arguments
+    # If first argument is a file path, handle as legacy mode directly (before argparse tries to parse it)
+    if is_file_path:
+        # Create args namespace for legacy mode without parsing
+        args = argparse.Namespace()
+        args.mode = None
+        args.msa_dir = None
+        args.input = None
+        args.msa_file = sys.argv[1]
+        args.output = None
+        args.output_file = sys.argv[2] if len(sys.argv) > 2 and not sys.argv[2].startswith('-') else None
+        args.save_prefix = None
+        args.beam_size = '1'
+        args.sequence_type = 'standard'
+        args.branch_model = 'gamma'
+        args.window_coverage = '1'
+        args.quiet = '-q' in sys.argv or '--quiet' in sys.argv
+        args.verbose = '-v' in sys.argv or '--verbose' in sys.argv
+    else:
+        try:
+            args = parser.parse_args()
+        except SystemExit as e:
+            if show_full_help:
+                sys.exit(0)
+            if e.code != 0 and not has_subcommand:
+                print_simplified_help()
+                sys.exit(2)
+            sys.exit(e.code if e.code else 2)
 
     # Validate that quiet and verbose are not both specified
-    if args.quiet and args.verbose:
+    if hasattr(args, 'quiet') and hasattr(args, 'verbose') and args.quiet and args.verbose:
         parser.error("Cannot specify both -q/--quiet and -v/--verbose")
 
-    # Determine verbosity level for model.predict() calls
-    # 0 = silent, 1 = progress bar, 2 = one line per epoch (not used for predict)
-    if args.quiet:
-        predict_verbose = 0  # Suppress progress bars in quiet mode
-    elif args.verbose:
-        predict_verbose = 1  # Show progress bars in verbose mode
-    else:
-        predict_verbose = 1  # Default: show progress bars (warnings still suppressed via TF_CPP_MIN_LOG_LEVEL)
-
-    # Determine MSA file: use -m/--msa_dir or -i/--input if provided, otherwise use positional argument
-    if args.msa_dir is not None:
-        msa_dir = args.msa_dir
-    elif args.input is not None:
-        msa_dir = args.input
-    elif args.msa_file is not None:
-        msa_dir = args.msa_file
-    else:
-        parser.error("MSA file must be provided either as positional argument or with -m/--msa_dir or -i/--input")
-
-    # Determine output path: use -o/--output if provided, otherwise use positional output argument
-    if args.output is not None:
-        output_path = args.output
-    elif args.output_file is not None:
-        output_path = args.output_file
-    else:
-        output_path = None
-
-    save_prefix = args.save_prefix
-    beam_size = args.beam_size
-    sequence_type = args.sequence_type
-    branch_model = args.branch_model
-    window_coverage = args.window_coverage
+    # Determine verbosity
+    verbose = args.verbose and not args.quiet
+    predict_verbose = 1 if verbose else (0 if args.quiet else 1)
 
     # Use 'with' statement to ensure stderr is properly restored
-    # The redirector was already entered at module level, so this will properly exit it
     with _stderr_redirector:
-        # Parse MSA file
-        save_alignment, taxa_name, len_of_msa, taxa_num = parse_msa_file(msa_dir)
+        # Handle backward compatibility: if no mode but positional args exist
+        if args.mode is None:
+            if is_file_path or (len(sys.argv) > 1 and not sys.argv[1].startswith('-') and sys.argv[1] not in ['simulate', 'train', 'infer', 'evaluate']):
+                # Legacy mode: create inference args from positional arguments
+                infer_args = argparse.Namespace()
+                infer_args.msa_dir = getattr(args, 'msa_dir', None)
+                infer_args.input = getattr(args, 'input', None)
+                infer_args.msa_file = getattr(args, 'msa_file', None) if hasattr(args, 'msa_file') and args.msa_file else sys.argv[1]
+                infer_args.output = getattr(args, 'output', None)
+                infer_args.output_file = getattr(args, 'output_file', None) if hasattr(args, 'output_file') and args.output_file else (sys.argv[2] if len(sys.argv) > 2 and not sys.argv[2].startswith('-') else None)
+                infer_args.save_prefix = getattr(args, 'save_prefix', None)
+                infer_args.beam_size = getattr(args, 'beam_size', '1')
+                infer_args.sequence_type = getattr(args, 'sequence_type', 'standard')
+                infer_args.branch_model = getattr(args, 'branch_model', 'gamma')
+                infer_args.window_coverage = getattr(args, 'window_coverage', '1')
+                infer_args.quiet = getattr(args, 'quiet', False)
+                infer_args.verbose = getattr(args, 'verbose', False)
+                args = infer_args
+                args.mode = 'infer'
+            else:
+                # No args: show help
+                if show_full_help:
+                    parser.print_help()
+                else:
+                    print_simplified_help()
+                sys.exit(0)
 
-        # Initialize quartet data structures
-        (start_end_list, comb_of_id, leave_node_name, leave_node_comb_name,
-         dic_for_leave_node_comb_name, internal_node_name_pool) = initialize_quartet_data(taxa_num)
+        # Handle different modes
+        if args.mode == 'simulate':
+            # Simulation mode
+            range_of_taxa_num = list(eval(args.range_of_taxa_num))
+            distribution_of_internal_branch_length = list(eval(args.distribution_of_internal_branch_length))
+            distribution_of_external_branch_length = list(eval(args.distribution_of_external_branch_length))
+            range_of_mean_pairwise_divergence = list(eval(args.range_of_mean_pairwise_divergence))
+            range_of_indel_substitution_rate = list(eval(args.range_of_indel_substitution_rate))
 
-        # Convert alignment to numpy array
-        org_seq = get_numpy(save_alignment)
+            # Determine evaluation output directory
+            eval_output_dir = args.evaluation_output
+            if eval_output_dir is None and args.evaluate:
+                eval_output_dir = os.path.join(args.simulation_dir, 'evaluation')
 
-        # Load deep learning model based on MSA length and parameters
-        dl_model, window_size = load_dl_model(len_of_msa, sequence_type, branch_model)
-        window_number = int(len_of_msa * float(window_coverage) // window_size + 1)
+            result = run_full_simulation(
+                args.simulation_dir, args.num_of_topology, args.taxa_num, range_of_taxa_num,
+                args.len_of_msa_upper_bound, args.len_of_msa_lower_bound, args.num_of_process,
+                distribution_of_internal_branch_length, distribution_of_external_branch_length,
+                range_of_mean_pairwise_divergence, range_of_indel_substitution_rate,
+                args.max_indel_length, max_length=args.max_length, cleanup=not args.no_cleanup,
+                verbose=verbose, run_inference=args.evaluate, evaluate_results=args.evaluate,
+                output_dir=eval_output_dir, sequence_type=args.sequence_type,
+                branch_model=args.branch_model, beam_size=args.beam_size,
+                window_coverage=args.window_coverage
+            )
 
-        # Generate predictions
-        dl_predict = np.zeros((len(comb_of_id), 3))
-        fill_dl_predict(window_number, window_size, len_of_msa, comb_of_id, org_seq,
-                       dl_model, dl_predict, verbose=predict_verbose)
-        dl_predict /= window_number
+            if verbose:
+                print(f"\nSimulation completed. Data saved to:")
+                print(f"  Sequences: {result['numpy_seq_dir']}")
+                print(f"  Labels: {result['numpy_label_dir']}")
+                print(f"  FASTA: {result['fasta_dir']}")
+                if 'evaluation' in result:
+                    stats = result['evaluation']['statistics']
+                    print(f"\nEvaluation results saved to: {eval_output_dir}")
 
-        # Generate phylogenetic tree in Newick format
-        use_masking = taxa_num > MIN_TAXA_FOR_MASKING
-        searched_tree_str = gen_phylogenetic_tree(
-            dl_predict, int(beam_size), taxa_num, leave_node_comb_name,
-            dic_for_leave_node_comb_name, internal_node_name_pool,
-            use_masking=use_masking, start_end_list=start_end_list, comb_of_id=comb_of_id
-        )
-        searched_tree = transform_str(searched_tree_str, taxa_name, taxa_num)
+        elif args.mode == 'evaluate':
+            # Evaluation mode (standalone)
+            output_dir = args.output_dir
+            if output_dir is None:
+                output_dir = os.getcwd()
 
-        # Write output
-        write_output(searched_tree, output_path, save_prefix)
+            evaluation_results = evaluate_simulation_results(
+                args.fasta_dir, args.trees_file, output_dir=output_dir,
+                sequence_type=args.sequence_type, branch_model=args.branch_model,
+                beam_size=args.beam_size, window_coverage=args.window_coverage, verbose=verbose
+            )
+
+            if verbose:
+                stats = evaluation_results['statistics']
+                print(f"\nEvaluation Results:")
+                print(f"  Total files: {stats['total_files']}")
+                print(f"  Successful: {stats['successful_inferences']}")
+                print(f"  Failed: {stats['failed_inferences']}")
+                if stats['successful_inferences'] > 0:
+                    print(f"  Mean RF distance: {stats['mean_rf_distance']:.4f} ± {stats['std_rf_distance']:.4f}")
+                    print(f"  Mean normalized RF: {stats['mean_normalized_rf']:.4f} ± {stats['std_normalized_rf']:.4f}")
+                print(f"\nResults saved to: {output_dir}")
+
+        elif hasattr(args, 'mode') and args.mode == 'train':
+            # Training mode
+            model, history = train_fusang_model(
+                args.numpy_seq_dir, args.numpy_label_dir,
+                window_size=args.window_size, epochs=args.epochs,
+                batch_size=args.batch_size, learning_rate=args.learning_rate,
+                train_ratio=args.train_ratio, val_ratio=args.val_ratio,
+                model_save_path=args.model_save_path, verbose=2 if verbose else 1
+            )
+
+            if verbose:
+                print(f"\nTraining completed. Model saved to: {args.model_save_path}")
+
+        else:
+            # Inference mode (default, backward compatible)
+            # Determine MSA file
+            if args.msa_dir is not None:
+                msa_dir = args.msa_dir
+            elif args.input is not None:
+                msa_dir = args.input
+            elif args.msa_file is not None:
+                msa_dir = args.msa_file
+            else:
+                parser.error("MSA file must be provided either as positional argument or with -m/--msa_dir or -i/--input")
+
+            # Determine output path
+            if args.output is not None:
+                output_path = args.output
+            elif args.output_file is not None:
+                output_path = args.output_file
+            else:
+                output_path = None
+
+            save_prefix = args.save_prefix
+            beam_size = args.beam_size
+            sequence_type = args.sequence_type
+            branch_model = args.branch_model
+            window_coverage = args.window_coverage
+
+            # Parse MSA file
+            save_alignment, taxa_name, len_of_msa, taxa_num = parse_msa_file(msa_dir)
+
+            # Initialize quartet data structures
+            (start_end_list, comb_of_id, leave_node_name, leave_node_comb_name,
+             dic_for_leave_node_comb_name, internal_node_name_pool) = initialize_quartet_data(taxa_num)
+
+            # Convert alignment to numpy array
+            org_seq = get_numpy(save_alignment)
+
+            # Load deep learning model based on MSA length and parameters
+            dl_model, window_size = load_dl_model(len_of_msa, sequence_type, branch_model)
+            window_number = int(len_of_msa * float(window_coverage) // window_size + 1)
+
+            # Generate predictions
+            dl_predict = np.zeros((len(comb_of_id), 3))
+            fill_dl_predict(window_number, window_size, len_of_msa, comb_of_id, org_seq,
+                           dl_model, dl_predict, verbose=predict_verbose)
+            dl_predict /= window_number
+
+            # Generate phylogenetic tree in Newick format
+            use_masking = taxa_num > MIN_TAXA_FOR_MASKING
+            searched_tree_str = gen_phylogenetic_tree(
+                dl_predict, int(beam_size), taxa_num, leave_node_comb_name,
+                dic_for_leave_node_comb_name, internal_node_name_pool,
+                use_masking=use_masking, start_end_list=start_end_list, comb_of_id=comb_of_id
+            )
+            searched_tree = transform_str(searched_tree_str, taxa_name, taxa_num)
+
+            # Write output
+            write_output(searched_tree, output_path, save_prefix)

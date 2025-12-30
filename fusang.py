@@ -1,7 +1,11 @@
 import argparse
+import datetime
+import json
 import math
 import multiprocessing
 import os
+import platform
+import random
 import re
 import shutil
 import subprocess
@@ -9,13 +13,15 @@ import sys
 import warnings
 from io import StringIO
 from itertools import combinations
-from multiprocessing import Pool
+from multiprocessing import Pool, cpu_count
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import scipy
+import scipy.stats
 from Bio import AlignIO
-from ete3 import Tree
+from ete3 import Tree, PhyloTree
 
 # Parse arguments early to set logging level before TensorFlow import
 _parser = argparse.ArgumentParser('get_msa_dir', add_help=False)
@@ -653,7 +659,8 @@ def parse_msa_file(msa_dir):
     for i in range(len(support_format)):
         if msa_dir.endswith(support_format[i]):
             try:
-                alignment = AlignIO.read(open(msa_dir), bio_format[i])
+                with open(msa_dir, 'r') as f:
+                    alignment = AlignIO.read(f, bio_format[i])
                 len_of_msa = len(alignment[0].seq)
                 taxa_num = len(alignment)
 
@@ -756,123 +763,633 @@ def load_dl_model(len_of_msa, sequence_type, branch_model):
 # Simulation Data Generation Functions
 # ============================================================================
 
+def _get_extremes(tree):
+    """Get the nearest and farthest nodes from root."""
+    longest_distance = float('-inf')
+    shortest_distance = float('+inf')
+    nearest = None
+    farthest = None
+    for node in tree.get_leaves():
+        distance = node.get_distance(tree)
+        if distance > longest_distance:
+            longest_distance = distance
+            farthest = node
+        if distance < shortest_distance:
+            shortest_distance = distance
+            nearest = node
+    return (nearest, farthest), (shortest_distance, longest_distance)
+
+
+def _find_lba_branches(tree):
+    """Find long branch attraction branches."""
+    min_branch_ratio = float('+inf')
+    leaves = []
+    for node in tree.traverse('preorder'):
+        if node.is_leaf() or node.is_root():
+            continue
+        t = tree.copy('newick')
+        t.set_outgroup(t & node.name)
+        if t.children[0].is_leaf() or t.children[1].is_leaf():
+            continue
+        (short1, long1), (sdis1, ldis1) = _get_extremes(t.children[0])
+        if short1 is None or long1 is None:
+            continue
+        (short2, long2), (sdis2, ldis2) = _get_extremes(t.children[1])
+        if short2 is None or long2 is None:
+            continue
+        internal_distance = t.children[0].dist + t.children[1].dist
+        branch_ratio = ((internal_distance + max(sdis1, sdis2)) / min(ldis1, ldis2))
+        if branch_ratio < min_branch_ratio:
+            leaves = [short1, long1, short2, long2]
+            min_branch_ratio = branch_ratio
+    leaves = [tree & leaf.name for leaf in leaves]
+    return min_branch_ratio, leaves
+
+
+def _gen_newick(args):
+    """Generate a single Newick tree topology."""
+    q, seed, taxa_num, range_of_taxa_num, distribution_of_internal_branch_length, \
+        distribution_of_external_branch_length, range_of_mean_pairwise_divergence = args
+
+    random.seed(seed)
+    np.random.seed(seed)
+
+    taxon_count_model = scipy.stats.uniform(range_of_taxa_num[0], range_of_taxa_num[1])
+    tree = PhyloTree()
+    tree.populate(int(taxon_count_model.rvs()), random_branches=True)
+    current_internal_index = 0
+    current_leaf_index = 0
+
+    if distribution_of_internal_branch_length[0] == 1:
+        internal_branch_model = scipy.stats.gamma(
+            a=distribution_of_internal_branch_length[1],
+            scale=distribution_of_internal_branch_length[2]
+        )
+    elif distribution_of_internal_branch_length[0] == 0:
+        internal_branch_model = scipy.stats.uniform(
+            distribution_of_internal_branch_length[1],
+            distribution_of_internal_branch_length[2]
+        )
+
+    if distribution_of_external_branch_length[0] == 1:
+        external_branch_model = scipy.stats.gamma(
+            a=distribution_of_external_branch_length[1],
+            scale=distribution_of_external_branch_length[2]
+        )
+    elif distribution_of_external_branch_length[0] == 0:
+        external_branch_model = scipy.stats.uniform(
+            distribution_of_external_branch_length[1],
+            distribution_of_external_branch_length[2]
+        )
+
+    expected_mean_pairwise_divergence = scipy.stats.uniform(
+        range_of_mean_pairwise_divergence[0],
+        range_of_mean_pairwise_divergence[1]
+    ).rvs()
+
+    for node in tree.traverse("preorder"):
+        if node.is_leaf():
+            node.name = f"taxon{current_leaf_index:d}"
+            node.dist = external_branch_model.rvs()
+            current_leaf_index += 1
+        else:
+            node.name = f"node{current_internal_index:d}"
+            node.dist = internal_branch_model.rvs()
+            current_internal_index += 1
+
+    total_tree_leaves = [ele.name for ele in tree.get_leaves()]
+
+    pairwise_divergence_list = []
+    for i in range(0, len(total_tree_leaves) - 1):
+        for j in range(i + 1, len(total_tree_leaves)):
+            tmp_dist = tree.get_distance(total_tree_leaves[i], total_tree_leaves[j])
+            if tmp_dist > 1e-4:
+                pairwise_divergence_list.append(tmp_dist)
+
+    mean_pairwise_divergence = np.mean(np.array(pairwise_divergence_list))
+
+    scale_ratio = expected_mean_pairwise_divergence / mean_pairwise_divergence
+
+    for node in tree.traverse("preorder"):
+        node.dist = max(0.0001, float(node.dist) * scale_ratio)
+        node.dist = format(node.dist, '.4f')
+
+    if range_of_taxa_num[0] == range_of_taxa_num[1] == 4:
+        lba_ratio = 0.15
+    else:
+        lba_ratio = -1
+
+    if random.random() < lba_ratio:
+        __, leaves = _find_lba_branches(tree)
+        if len(tree.get_leaves()) != 4:
+            leaves = random.sample(tree.get_leaves(), 4)
+    else:
+        leaves = random.sample(tree.get_leaves(), taxa_num)
+
+    tree.prune(leaves, preserve_branch_length=True)
+    tree.unroot()
+
+    ans = tree.write(format=5)
+    match = re.findall(r'taxon\d+:', ans)
+    idx = ['0']
+    number_set = [i for i in range(1, taxa_num)]
+
+    for i in range(0, taxa_num - 1):
+        sample_number = random.choice(number_set)
+        number_set.remove(sample_number)
+        idx.append(str(sample_number))
+
+    for i in range(0, len(match)):
+        ans = ans.replace(match[i], idx[i] + ':')
+
+    q.put(ans)
+
+
 def run_simulation_topology(simulation_dir, num_of_topology, taxa_num, range_of_taxa_num,
-                           len_of_msa_upper_bound, len_of_msa_lower_bound, num_of_process,
-                           distribution_of_internal_branch_length, distribution_of_external_branch_length,
-                           range_of_mean_pairwise_divergence, range_of_indel_substitution_rate,
-                           max_indel_length, verbose=False):
+                           num_of_process, distribution_of_internal_branch_length,
+                           distribution_of_external_branch_length, range_of_mean_pairwise_divergence,
+                           seed=42, verbose=False, logger=None):
     """
-    Run topology simulation using the simulate_topology.py script.
-
-    Parameters:
-    simulation_dir: Path to simulation directory containing code/
-    num_of_topology: Number of MSAs to simulate
-    taxa_num: Number of taxa in final tree
-    range_of_taxa_num: Range of taxa numbers for sampling [lower, upper]
-    len_of_msa_upper_bound: Upper bound of MSA length
-    len_of_msa_lower_bound: Lower bound of MSA length
-    num_of_process: Number of processes for parallel execution
-    distribution_of_internal_branch_length: Distribution parameters [type, param1, param2]
-    distribution_of_external_branch_length: Distribution parameters [type, param1, param2]
-    range_of_mean_pairwise_divergence: Range [min, max] for mean pairwise divergence
-    range_of_indel_substitution_rate: Range [min, max] for indel substitution rate
-    max_indel_length: Maximum indel length
-    verbose: Whether to show verbose output
-    """
-    code_dir = Path(simulation_dir) / 'code'
-    if not code_dir.exists():
-        raise FileNotFoundError(f"Simulation code directory not found: {code_dir}")
-
-    # Build command
-    cmd = [
-        'python', 'simulate_topology.py',
-        '--num_of_topology', str(num_of_topology),
-        '--taxa_num', str(taxa_num),
-        '--range_of_taxa_num', str(range_of_taxa_num),
-        '--len_of_msa_upper_bound', str(len_of_msa_upper_bound),
-        '--len_of_msa_lower_bound', str(len_of_msa_lower_bound),
-        '--num_of_process', str(num_of_process),
-        '--distribution_of_internal_branch_length', str(distribution_of_internal_branch_length),
-        '--distribution_of_external_branch_length', str(distribution_of_external_branch_length),
-        '--range_of_mean_pairwise_divergence', str(range_of_mean_pairwise_divergence),
-        '--range_of_indel_substitution_rate', str(range_of_indel_substitution_rate),
-        '--max_indel_length', str(max_indel_length)
-    ]
-
-    if verbose:
-        print(f"Running topology simulation: {' '.join(cmd)}")
-
-    result = subprocess.run(cmd, cwd=str(code_dir), capture_output=not verbose, text=True)
-    if result.returncode != 0:
-        raise RuntimeError(f"Topology simulation failed: {result.stderr}")
-
-    return result
-
-
-def run_indelible(simulation_dir, verbose=False):
-    """
-    Run INDELible to generate sequence alignments.
+    Generate phylogenetic tree topologies.
 
     Parameters:
     simulation_dir: Path to simulation directory
+    num_of_topology: Number of MSAs to simulate
+    taxa_num: Number of taxa in final tree
+    range_of_taxa_num: Range of taxa numbers [lower, upper] (as string like '[5, 40]' or list)
+    num_of_process: Number of processes for parallel execution
+    distribution_of_internal_branch_length: Distribution parameters [type, param1, param2] (as string or list)
+    distribution_of_external_branch_length: Distribution parameters [type, param1, param2] (as string or list)
+    range_of_mean_pairwise_divergence: Range [min, max] for mean pairwise divergence (as string or list)
+    seed: Random seed for reproducibility (default: 42)
     verbose: Whether to show verbose output
     """
-    simulate_data_dir = Path(simulation_dir) / 'simulate_data'
-    indelible_path = Path(simulation_dir) / 'indelible'
+    # Parse parameters
+    if isinstance(range_of_taxa_num, str):
+        range_of_taxa_num = list(eval(range_of_taxa_num))
+    if isinstance(distribution_of_internal_branch_length, str):
+        distribution_of_internal_branch_length = list(eval(distribution_of_internal_branch_length))
+    if isinstance(distribution_of_external_branch_length, str):
+        distribution_of_external_branch_length = list(eval(distribution_of_external_branch_length))
+    if isinstance(range_of_mean_pairwise_divergence, str):
+        range_of_mean_pairwise_divergence = list(eval(range_of_mean_pairwise_divergence))
 
-    if not simulate_data_dir.exists():
-        raise FileNotFoundError(f"Simulate data directory not found: {simulate_data_dir}")
+    # Create label_file directory and set output path
+    label_file_dir = Path(simulation_dir) / 'label_file'
+    label_file_dir.mkdir(parents=True, exist_ok=True)
+    output_newick = label_file_dir / 'newick.csv'
 
-    if not indelible_path.exists():
-        raise FileNotFoundError(f"INDELible executable not found: {indelible_path}")
+    if verbose:
+        print(f"Generating {num_of_topology} topologies...")
+
+    # Set up multiprocessing
+    if num_of_process <= 0:
+        num_of_process = max(1, cpu_count() - 1)
+
+    q = multiprocessing.Manager().Queue()
+    para_list = [
+        (q, seed + i, taxa_num, range_of_taxa_num, distribution_of_internal_branch_length,
+         distribution_of_external_branch_length, range_of_mean_pairwise_divergence)
+        for i in range(0, num_of_topology)
+    ]
+
+    pool = Pool(num_of_process)
+    pool.map(_gen_newick, para_list)
+    pool.close()
+    pool.join()
+
+    # Collect results
+    csv_list = []
+    while not q.empty():
+        tmp_topo = q.get()
+        csv_list.append(tmp_topo)
+
+    csv_list.sort()  # Keep the same order for reproducibility
+
+    # Save to CSV
+    dictionary = {"newick": csv_list}
+    data = pd.DataFrame(dictionary)
+    data.to_csv(output_newick, index=False)
+
+    if logger:
+        logger.log_detail(f"Generated {len(csv_list)} topologies and saved to '{output_newick}'.")
+    elif verbose:
+        print(f"Generated {len(csv_list)} topologies and saved to '{output_newick}'.")
+
+    return output_newick
+
+
+def _format_num(x, digits=5):
+    """Format number with fixed decimal places."""
+    if hasattr(x, 'ndim') and x.ndim > 0:
+        x = x.item()
+    return f"{float(x):.{digits}f}"
+
+
+def _process_single_model(args):
+    """Process a single model configuration."""
+    i, model, max_indel_length, indel_rate_bounds, seed = args
+
+    # Set random seed
+    np.random.seed(seed)
+
+    model_orig = model
+    model_name = f"{model}Model{i}"
+
+    # Generate parameters
+    I = np.random.uniform(0, 1, size=1)
+    A = np.random.uniform(0, 5, size=1)
+    Pi = np.random.dirichlet([5, 5, 5, 5], size=1)[0]  # Nucleotide proportions
+    Pi = [_format_num(p, 5) for p in Pi]
+
+    output_lines = [f'[MODEL] {model_name}']
+
+    # Generate parameters based on different models
+    model_params = {
+        'HKY': 1, 'K80': 1,
+        'TrN': 2,
+        'TIM': 3, 'TIMef': 3,
+        'TVM': 4,
+        'SYM': 5, 'GTR': 5,
+        'UNREST': 11
+    }
+
+    if model in model_params:
+        n_params = model_params[model]
+        params = [_format_num(np.random.uniform(0, 3), 2) for _ in range(n_params)]
+        submodel = f"{model} {' '.join(params)}"
+    else:
+        submodel = model
+
+    output_lines.extend([
+        f' [submodel] {submodel}',
+        f' [rates] {_format_num(I, 2)} {_format_num(A, 2)} 0',
+        f' [indelmodel] POW 1.5 {max_indel_length}',
+        f' [indelrate] {_format_num(np.random.uniform(*indel_rate_bounds), 5)}'
+    ])
+
+    if model_orig in ['F81', 'HKY', 'TrN', 'TIM', 'TVM', 'GTR']:
+        output_lines.append(f' [statefreq] {" ".join(Pi)}')
+
+    return {'lines': output_lines, 'name': model_name}
+
+
+def _write_indelible_control_file(out_file, seed, results, model_names, newick, tree_ids, partition_names, msa_lengths):
+    """Write INDELible control file."""
+    with open(out_file, 'w') as f:
+        f.write("[TYPE] NUCLEOTIDE 2\n")
+
+        # Write basic settings
+        f.write("\n")
+        f.write("[SETTINGS]\n")
+        f.write(" [output] FASTA\n")
+        f.write(f" [randomseed] {seed}\n")
+
+        f.write("\n")
+        for result in results:
+            f.write('\n'.join(result['lines']) + '\n')
+
+        # Write TREE block
+        f.write("\n")
+        for tid, nw in zip(tree_ids, newick):
+            f.write(f"[TREE] {tid} {nw}\n")
+
+        # Write PARTITIONS block
+        f.write("\n")
+        for pname, tid, mname, length in zip(partition_names, tree_ids, model_names, msa_lengths):
+            f.write(f"[PARTITIONS] {pname} [ {tid} {mname} {length} ]\n")
+
+        # Write EVOLVE block
+        f.write("\n[EVOLVE]\n")
+        for pname, tid in zip(partition_names, tree_ids):
+            f.write(f"{pname} 1 {tid}\n")
+
+
+def _write_control_file_and_run_indelible(args):
+    """Generate control file and run INDELible for a batch."""
+    start_idx, end_idx, seed, results, model_names, newick, tree_ids, partition_names, msa_lengths, out_dir, indelible_path = args
+
+    batch_out_dir = Path(out_dir) / f"batch_{start_idx}_{end_idx}"
+    batch_out_dir.mkdir(parents=True, exist_ok=True)
+
+    out_file = batch_out_dir / "control.txt"
+
+    _write_indelible_control_file(
+        out_file, seed,
+        results[start_idx:end_idx],
+        model_names[start_idx:end_idx],
+        newick[start_idx:end_idx],
+        tree_ids[start_idx:end_idx],
+        partition_names[start_idx:end_idx],
+        msa_lengths[start_idx:end_idx]
+    )
+
+    # Run indelible
+    try:
+        subprocess.run([str(indelible_path), str(out_file)], cwd=str(batch_out_dir), check=True)
+    except subprocess.CalledProcessError as e:
+        print(f"Command failed with return code {e.returncode}")
+        raise
+
+
+def _find_indelible_executable(simulation_dir=None, indelible_path=None):
+    """
+    Find INDELible executable. Search order:
+    1. User-specified path
+    2. simulation_dir/indelible
+    3. fusang.py directory/simulation/indelible
+    4. Current directory/simulation/indelible
+    """
+    if indelible_path is not None:
+        path = Path(indelible_path)
+        if path.exists():
+            return path.resolve()
+        raise FileNotFoundError(f"INDELible executable not found at specified path: {indelible_path}")
+
+    # Try simulation_dir/indelible
+    if simulation_dir is not None:
+        path = Path(simulation_dir) / 'indelible'
+        if path.exists():
+            return path.resolve()
+
+    # Try fusang.py directory/simulation/indelible
+    script_dir = Path(__file__).resolve().parent
+    path = script_dir / 'simulation' / 'indelible'
+    if path.exists():
+        return path.resolve()
+
+    # Try current directory/simulation/indelible
+    path = Path('simulation') / 'indelible'
+    if path.exists():
+        return path.resolve()
+
+    raise FileNotFoundError(
+        f"INDELible executable not found. Please specify --indelible_path or place it at:\n"
+        f"  - {simulation_dir}/indelible (if simulation_dir is specified)\n"
+        f"  - {script_dir}/simulation/indelible\n"
+        f"  - ./simulation/indelible"
+    )
+
+
+def run_simulation_sequence(simulation_dir, taxa_num, num_of_topology, num_of_process,
+                           len_of_msa_lower_bound, len_of_msa_upper_bound,
+                           range_of_indel_substitution_rate, max_indel_length,
+                           seed=42, indelible_path=None, batch_size=1000, verbose=False, logger=None):
+    """
+    Generate sequences using INDELible. This generates INDELible control files and runs INDELible.
+
+    Parameters:
+    simulation_dir: Path to simulation directory
+    taxa_num: Number of taxa in final tree
+    num_of_topology: Number of MSAs to simulate
+    num_of_process: Number of processes for parallel execution
+    len_of_msa_lower_bound: Lower bound of MSA length
+    len_of_msa_upper_bound: Upper bound of MSA length
+    range_of_indel_substitution_rate: Range [min, max] for indel substitution rate
+    max_indel_length: Maximum indel length
+    seed: Random seed for reproducibility (default: 42)
+    indelible_path: Path to INDELible executable (None to auto-detect)
+    verbose: Whether to show verbose output
+    """
+    # Find INDELible executable
+    indelible_path = _find_indelible_executable(simulation_dir, indelible_path)
 
     # Make indelible executable
     indelible_path.chmod(0o777)
 
-    # Copy indelible to simulate_data if not already there
-    indelible_dest = simulate_data_dir / 'indelible'
-    if not indelible_dest.exists():
-        shutil.copy(indelible_path, indelible_dest)
-        indelible_dest.chmod(0o777)
+    # Create simulate_data directory
+    simulate_data_dir = Path(simulation_dir) / 'simulate_data'
+    simulate_data_dir.mkdir(parents=True, exist_ok=True)
+
+    # Get input newick file
+    newick_file = Path(simulation_dir) / 'label_file' / 'newick.csv'
+    if not newick_file.exists():
+        raise FileNotFoundError(f"Newick file not found: {newick_file}. Run topology simulation first.")
+
+    # Parse indel substitution rate range
+    if isinstance(range_of_indel_substitution_rate, str):
+        indel_rate_range = list(eval(range_of_indel_substitution_rate))
+    else:
+        indel_rate_range = range_of_indel_substitution_rate
+    indel_rate_bounds = (indel_rate_range[0], indel_rate_range[1])
+
+    if logger:
+        logger.log_detail(f"Generating sequences for {num_of_topology} topologies...")
+    elif verbose:
+        print(f"Generating sequences for {num_of_topology} topologies...")
+
+    # Set random seed
+    np.random.seed(seed)
+
+    # Generate models
+    possible_models = ['JC', 'TIM', 'TIMef', 'GTR', 'UNREST']
+    modelset = np.random.choice(possible_models, size=num_of_topology, replace=True)
+
+    # Generate model configurations
+    if num_of_process <= 0:
+        n_cores = max(1, cpu_count() - 1)
+    else:
+        n_cores = num_of_process
+
+    model_args = [
+        (i, model, max_indel_length, indel_rate_bounds, seed + i)
+        for i, model in enumerate(modelset, 1)
+    ]
+    with Pool(n_cores) as pool:
+        model_results = pool.map(_process_single_model, model_args)
+
+    model_names = [result['name'] for result in model_results]
+
+    # Read Newick file
+    newick_data = pd.read_csv(newick_file)
+    # The CSV has a 'newick' column, access it by name or index
+    if 'newick' in newick_data.columns:
+        newick = newick_data['newick'].tolist()
+    else:
+        # Fallback: if column name is different, use the last column
+        newick = newick_data.iloc[:, -1].tolist()
+    if len(newick) != num_of_topology:
+        raise ValueError(
+            f"The number of topologies in the newick file ({len(newick)}) "
+            f"does not match the number of simulations ({num_of_topology})."
+        )
+
+    # Generate tree IDs and partition names
+    tree_ids = [f"t_sim{i}" for i in range(1, num_of_topology + 1)]
+    partition_names = [f"p{i}" for i in range(1, num_of_topology + 1)]
+
+    # Generate MSA lengths
+    if len_of_msa_lower_bound == len_of_msa_upper_bound:
+        msa_lengths = np.repeat(len_of_msa_lower_bound, num_of_topology)
+    else:
+        msa_lengths = np.random.randint(len_of_msa_lower_bound, len_of_msa_upper_bound + 1, size=num_of_topology)
+
+    # Process in batches
+    # Use batch_size to control data amount per batch for parallel processing
+    # Each batch uses a different seed to ensure reproducibility and consistency
+    # The seed offset ensures that parallel results match serial results when using the same base seed
+    batch_args = []
+    for start_idx in range(0, num_of_topology, batch_size):
+        end_idx = min(start_idx + batch_size, num_of_topology)
+        # Use batch index to offset seed, ensuring each batch has unique but deterministic seed
+        # This ensures parallel results are consistent with serial execution
+        batch_seed = seed + (start_idx // batch_size)
+        batch_args.append((
+            start_idx, end_idx, batch_seed, model_results, model_names, newick,
+            tree_ids, partition_names, msa_lengths, simulate_data_dir, indelible_path
+        ))
+
+    if logger:
+        logger.log_detail(f"Processing {len(batch_args)} batches with batch size {batch_size}...")
+    elif verbose:
+        print(f"Processing {len(batch_args)} batches with batch size {batch_size}...")
+
+    with Pool(n_cores) as pool:
+        pool.map(_write_control_file_and_run_indelible, batch_args)
+
+    # Combine trees.txt files from all batches
+    if logger:
+        logger.log_detail("Combining trees.txt files from batches...")
+    elif verbose:
+        print("Combining trees.txt files from batches...")
+
+    trees_txt_path = simulate_data_dir / 'trees.txt'
+    if trees_txt_path.exists():
+        trees_txt_path.unlink()
+
+    batch_dirs = sorted([d for d in simulate_data_dir.iterdir() if d.is_dir() and d.name.startswith('batch_')])
+    if batch_dirs:
+        with open(trees_txt_path, 'w') as outfile:
+            # Write header from first batch
+            first_batch_trees = batch_dirs[0] / 'trees.txt'
+            if first_batch_trees.exists():
+                with open(first_batch_trees, 'r') as infile:
+                    header_lines = [next(infile) for _ in range(6)]
+                    outfile.writelines(header_lines)
+            # Append data from all batches
+            for batch_dir in batch_dirs:
+                batch_trees = batch_dir / 'trees.txt'
+                if batch_trees.exists():
+                    with open(batch_trees, 'r') as infile:
+                        lines = infile.readlines()
+                        # Skip header (first 6 lines) and append rest
+                        if len(lines) > 6:
+                            outfile.writelines(lines[6:])
 
     if verbose:
-        print("Running INDELible...")
-
-    result = subprocess.run('./indelible', cwd=str(simulate_data_dir), capture_output=not verbose, text=True)
-    if result.returncode != 0:
-        raise RuntimeError(f"INDELible execution failed: {result.stderr}")
-
-    return result
+        print(f"Sequence generation completed. Results in {simulate_data_dir}")
 
 
-def extract_fasta_data(simulation_dir, max_length=None, verbose=False):
+def _get_msa_length(msa_file):
+    """Get MSA length from a FASTA file."""
+    with open(msa_file, 'r') as f:
+        alignment = AlignIO.read(f, 'fasta')
+    return len(alignment[0].seq)
+
+
+def _extract_fasta_file(args):
+    """Extract a single FASTA file."""
+    file_path_str, in_dir, out_dir, max_length = args
+    file_path = Path(in_dir) / file_path_str
+
+    if file_path.is_file() and '.fas' in file_path.name and 'TRUE' in file_path.name:
+        msa_length = _get_msa_length(file_path)
+        if msa_length > max_length:
+            out_fail_dir = Path(out_dir) / 'fail'
+            out_fail_dir.mkdir(parents=True, exist_ok=True)
+            dest_path = out_fail_dir / file_path.name
+        else:
+            dest_path = Path(out_dir) / file_path.name
+        shutil.copy(file_path, dest_path)
+
+
+def extract_fasta_data(simulation_dir, max_length=None, verbose=False, logger=None):
     """
     Extract FASTA data from simulation output.
 
     Parameters:
     simulation_dir: Path to simulation directory
-    max_length: Maximum MSA length to keep (None for no limit)
+    max_length: Maximum MSA length to keep (None for no limit, default: 1e10)
     verbose: Whether to show verbose output
     """
-    code_dir = Path(simulation_dir) / 'code'
-    if not code_dir.exists():
-        raise FileNotFoundError(f"Simulation code directory not found: {code_dir}")
+    simulate_data_dir = Path(simulation_dir) / 'simulate_data'
+    fasta_data_dir = Path(simulation_dir) / 'fasta_data'
+    fasta_data_dir.mkdir(parents=True, exist_ok=True)
 
-    cmd = ['python', 'extract_fasta_data.py']
-    if max_length is not None:
-        cmd.extend(['--length', str(max_length)])
+    if max_length is None:
+        max_length = 1e10
 
     if verbose:
-        print(f"Extracting FASTA data: {' '.join(cmd)}")
+        print(f"Extracting FASTA files from {simulate_data_dir}...")
 
-    result = subprocess.run(cmd, cwd=str(code_dir), capture_output=not verbose, text=True)
-    if result.returncode != 0:
-        raise RuntimeError(f"FASTA extraction failed: {result.stderr}")
+    # Get all files in simulate_data directory (including batch subdirectories)
+    file_list = []
+    for item in simulate_data_dir.iterdir():
+        if item.is_file() and '.fas' in item.name and 'TRUE' in item.name:
+            file_list.append(str(item.relative_to(simulate_data_dir)))
+        elif item.is_dir() and item.name.startswith('batch_'):
+            # Also check batch subdirectories
+            for subitem in item.iterdir():
+                if subitem.is_file() and '.fas' in subitem.name and 'TRUE' in subitem.name:
+                    # Copy from batch directory
+                    file_list.append(str(subitem.relative_to(simulate_data_dir)))
 
-    return result
+    if verbose:
+        print(f"Found {len(file_list)} FASTA files to extract")
+
+    # Extract files in parallel
+    extract_args = [(fname, simulate_data_dir, fasta_data_dir, max_length) for fname in file_list]
+    with Pool(8) as pool:
+        pool.map(_extract_fasta_file, extract_args)
+
+    if verbose:
+        print(f"FASTA extraction completed. Results in {fasta_data_dir}")
 
 
-def generate_numpy_data(simulation_dir, verbose=False):
+def _assign_label(tree_str):
+    """Assign label (0, 1, or 2) to a tree based on quartet topology."""
+    t1 = Tree(tree_str, format=5)
+    label_0 = Tree('((0,1),2,3);')
+    label_1 = Tree('((0,2),1,3);')
+    label_2 = Tree('((0,3),1,2);')
+    if t1.robinson_foulds(label_0, unrooted_trees=True)[0] == 0:
+        return 0
+    elif t1.robinson_foulds(label_1, unrooted_trees=True)[0] == 0:
+        return 1
+    elif t1.robinson_foulds(label_2, unrooted_trees=True)[0] == 0:
+        return 2
+    else:
+        raise Exception("A fatal error occurred.")
+
+
+def _get_numpy(fasta_file_path):
+    """Convert FASTA file to numpy array."""
+    dic = {'A': '0', 'T': '1', 'C': '2', 'G': '3', '-': '4'}
+    matrix_out = []
+    fasta_dic = {}
+
+    with open(fasta_file_path, 'r') as aln:
+        for line in aln:
+            if line[0] == ">":
+                header = line[1:].rstrip('\n').strip()
+                fasta_dic[header] = []
+            elif line[0].isalpha() or line[0] == '-':
+                processed_line = line[:].rstrip('\n').strip()
+                for base, num in dic.items():
+                    processed_line = processed_line.replace(base, num)
+                line_list = [int(n) for n in list(processed_line)]
+                tmp_line = line_list + [4] * (2000 - len(line_list))
+                fasta_dic[header] += tmp_line[0:2000]
+
+    taxa_block = []
+    for taxa in sorted(list(fasta_dic.keys())):
+        taxa_block.append(fasta_dic[taxa.strip()])
+    matrix_out.append(taxa_block)
+
+    return np.array(matrix_out)
+
+
+def generate_numpy_data(simulation_dir, verbose=False, logger=None):
     """
     Generate numpy training data from FASTA files.
 
@@ -880,10 +1397,6 @@ def generate_numpy_data(simulation_dir, verbose=False):
     simulation_dir: Path to simulation directory
     verbose: Whether to show verbose output
     """
-    code_dir = Path(simulation_dir) / 'code'
-    if not code_dir.exists():
-        raise FileNotFoundError(f"Simulation code directory not found: {code_dir}")
-
     # Copy trees.txt if it exists
     trees_src = Path(simulation_dir) / 'simulate_data' / 'trees.txt'
     trees_dest = Path(simulation_dir) / 'label_file' / 'trees.txt'
@@ -891,16 +1404,439 @@ def generate_numpy_data(simulation_dir, verbose=False):
         trees_dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy(trees_src, trees_dest)
 
-    cmd = ['python', 'gen_numpy.py']
+    # Set up paths
+    trees_txt_path = trees_dest
+    fasta_data_dir = Path(simulation_dir) / 'fasta_data'
+    numpy_data_dir = Path(simulation_dir) / 'numpy_data'
+    numpy_seq_dir = numpy_data_dir / 'seq'
+    numpy_label_dir = numpy_data_dir / 'label'
+    numpy_seq_dir.mkdir(parents=True, exist_ok=True)
+    numpy_label_dir.mkdir(parents=True, exist_ok=True)
+
+    if not trees_txt_path.exists():
+        raise FileNotFoundError(f"Trees file not found: {trees_txt_path}")
 
     if verbose:
-        print(f"Generating numpy data: {' '.join(cmd)}")
+        print(f"Reading trees from {trees_txt_path}...")
 
-    result = subprocess.run(cmd, cwd=str(code_dir), capture_output=not verbose, text=True)
-    if result.returncode != 0:
-        raise RuntimeError(f"Numpy data generation failed: {result.stderr}")
+    # Read trees.txt (skip first 5 lines, tab-separated, column 8 contains tree)
+    csv_data = pd.read_table(trees_txt_path, skiprows=5, sep='\t', header=None)
+    file_names = list(csv_data[0])
+    topologies = list(csv_data[8])
+    tree_dict = {}
+    for i in range(len(file_names)):
+        tree_dict[file_names[i]] = topologies[i]
 
-    return result
+    if verbose:
+        print(f"Processing FASTA files from {fasta_data_dir}...")
+
+    # Process all FASTA files
+    file_list = [f for f in fasta_data_dir.iterdir() if f.is_file() and '.fas' in f.name and 'TRUE' in f.name]
+    random.shuffle(file_list)
+
+    for fasta_file in file_list:
+        if fasta_file.name == 'fail':
+            continue
+
+        # Extract file ID (e.g., "sim1" from "sim1_TRUE.fas")
+        file_base = fasta_file.stem.replace('_TRUE', '')
+        if file_base not in tree_dict:
+            if verbose:
+                print(f"Warning: No tree found for {file_base}, skipping...")
+            continue
+
+        try:
+            current_label = np.array(_assign_label(tree_dict[file_base]))
+            current_seq = _get_numpy(fasta_file)
+
+            # Generate output file names (e.g., "1.npy" from "sim1_TRUE.fas")
+            file_id = file_base.replace('sim', '')
+            seq_file = numpy_seq_dir / f'{file_id}.npy'
+            label_file = numpy_label_dir / f'{file_id}.npy'
+
+            np.save(seq_file, current_seq)
+            np.save(label_file, current_label)
+
+            if verbose:
+                print(f'[{current_label}] {current_seq.shape}')
+        except Exception as e:
+            if verbose:
+                print(f"Error processing {fasta_file.name}: {e}")
+            continue
+
+    if verbose:
+        print(f"Numpy data generation completed. Results in {numpy_data_dir}")
+
+
+class SimulationLogger:
+    """
+    Logger for simulation process that writes detailed logs to file
+    and shows summary on screen.
+    """
+    def __init__(self, log_file_path, verbose=True):
+        self.log_file_path = Path(log_file_path)
+        self.log_file_path.parent.mkdir(parents=True, exist_ok=True)
+        self.verbose = verbose
+        self.log_file = None
+        self._open_log_file()
+    
+    def _open_log_file(self):
+        """Open log file for writing."""
+        self.log_file = open(self.log_file_path, 'w', encoding='utf-8')
+        self.log_file.write("=" * 80 + "\n")
+        self.log_file.write(f"Fusang Simulation Log\n")
+        self.log_file.write(f"Started at: {datetime.datetime.now().isoformat()}\n")
+        self.log_file.write("=" * 80 + "\n\n")
+        self.log_file.flush()
+    
+    def log_detail(self, message, timestamp=True):
+        """Write detailed message to log file only."""
+        if timestamp:
+            timestamp_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            self.log_file.write(f"[{timestamp_str}] {message}\n")
+        else:
+            self.log_file.write(f"{message}\n")
+        self.log_file.flush()
+    
+    def log_summary(self, message):
+        """Write summary message to both screen and log file."""
+        timestamp_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        log_message = f"[{timestamp_str}] {message}\n"
+        self.log_file.write(log_message)
+        self.log_file.flush()
+        if self.verbose:
+            print(message)
+    
+    def log_both(self, message, timestamp=True):
+        """Write message to both screen and log file."""
+        if timestamp:
+            timestamp_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            log_message = f"[{timestamp_str}] {message}\n"
+        else:
+            log_message = f"{message}\n"
+        self.log_file.write(log_message)
+        self.log_file.flush()
+        if self.verbose:
+            print(message)
+    
+    def close(self):
+        """Close log file."""
+        if self.log_file:
+            self.log_file.write("\n" + "=" * 80 + "\n")
+            self.log_file.write(f"Log ended at: {datetime.datetime.now().isoformat()}\n")
+            self.log_file.write("=" * 80 + "\n")
+            self.log_file.close()
+            self.log_file = None
+    
+    def __enter__(self):
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+        return False
+
+
+def _collect_simulation_statistics(simulation_dir):
+    """
+    Collect statistics about generated simulation data.
+
+    Parameters:
+    simulation_dir: Path to simulation directory
+
+    Returns:
+    Dictionary containing statistics
+    """
+    sim_path = Path(simulation_dir)
+    stats = {}
+
+    # Count numpy files
+    numpy_seq_dir = sim_path / 'numpy_data' / 'seq'
+    numpy_label_dir = sim_path / 'numpy_data' / 'label'
+    if numpy_seq_dir.exists():
+        seq_files = list(numpy_seq_dir.glob('*.npy'))
+        stats['num_numpy_seq_files'] = len(seq_files)
+        if seq_files:
+            # Get shape info from first file
+            try:
+                sample_seq = np.load(str(seq_files[0]))
+                stats['numpy_seq_shape'] = list(sample_seq.shape)
+            except:
+                stats['numpy_seq_shape'] = None
+    else:
+        stats['num_numpy_seq_files'] = 0
+
+    if numpy_label_dir.exists():
+        label_files = list(numpy_label_dir.glob('*.npy'))
+        stats['num_numpy_label_files'] = len(label_files)
+        if label_files:
+            try:
+                sample_label = np.load(str(label_files[0]))
+                stats['numpy_label_shape'] = list(sample_label.shape) if hasattr(sample_label, 'shape') else None
+            except:
+                stats['numpy_label_shape'] = None
+    else:
+        stats['num_numpy_label_files'] = 0
+
+    # Count FASTA files
+    fasta_dir = sim_path / 'fasta_data'
+    if fasta_dir.exists():
+        fasta_files = [f for f in fasta_dir.iterdir() if f.is_file() and '.fas' in f.name and 'TRUE' in f.name]
+        stats['num_fasta_files'] = len(fasta_files)
+        
+        # Calculate total FASTA file size
+        total_fasta_size = sum(f.stat().st_size for f in fasta_files)
+        stats['total_fasta_size_bytes'] = total_fasta_size
+        stats['total_fasta_size_mb'] = round(total_fasta_size / (1024 * 1024), 2)
+        
+        # Get MSA length statistics from FASTA files
+        msa_lengths = []
+        for fasta_file in fasta_files[:min(100, len(fasta_files))]:  # Sample first 100 files
+            try:
+                with open(fasta_file, 'r') as f:
+                    alignment = AlignIO.read(f, 'fasta')
+                if len(alignment) > 0:
+                    msa_lengths.append(len(alignment[0].seq))
+            except:
+                pass
+        
+        if msa_lengths:
+            stats['msa_length_stats'] = {
+                'min': int(min(msa_lengths)),
+                'max': int(max(msa_lengths)),
+                'mean': round(float(np.mean(msa_lengths)), 2),
+                'median': int(np.median(msa_lengths)),
+                'samples_measured': len(msa_lengths)
+            }
+    else:
+        stats['num_fasta_files'] = 0
+
+    # Count trees
+    trees_file = sim_path / 'label_file' / 'trees.txt'
+    if trees_file.exists():
+        try:
+            csv_data = pd.read_table(trees_file, skiprows=5, sep='\t', header=None)
+            stats['num_trees'] = len(csv_data)
+        except:
+            stats['num_trees'] = 0
+    else:
+        stats['num_trees'] = 0
+
+    # Count newick topologies
+    newick_file = sim_path / 'label_file' / 'newick.csv'
+    if newick_file.exists():
+        try:
+            newick_data = pd.read_csv(newick_file)
+            stats['num_topologies'] = len(newick_data)
+        except:
+            stats['num_topologies'] = 0
+    else:
+        stats['num_topologies'] = 0
+
+    return stats
+
+
+def _generate_simulation_metadata(simulation_dir, num_of_topology, taxa_num, range_of_taxa_num,
+                                 len_of_msa_upper_bound, len_of_msa_lower_bound, num_of_process,
+                                 distribution_of_internal_branch_length, distribution_of_external_branch_length,
+                                 range_of_mean_pairwise_divergence, range_of_indel_substitution_rate,
+                                 max_indel_length, max_length, seed, batch_size, indelible_path,
+                                 evaluation_results=None, verbose=False, logger=None):
+    """
+    Generate metadata files (JSON and summary.txt) for simulation results.
+
+    Parameters:
+    simulation_dir: Path to simulation directory
+    All other parameters: Simulation parameters
+    evaluation_results: Evaluation results if available
+    verbose: Whether to show verbose output
+    """
+    sim_path = Path(simulation_dir)
+    sim_path.mkdir(parents=True, exist_ok=True)
+
+    # Collect statistics
+    stats = _collect_simulation_statistics(simulation_dir)
+
+    # Get version information
+    try:
+        import importlib.metadata
+        try:
+            fusang_version = importlib.metadata.version('fusang')
+        except:
+            fusang_version = '0.1.0'  # Fallback to pyproject.toml version
+    except:
+        fusang_version = '0.1.0'
+
+    # Get Python and system information
+    python_version = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+    try:
+        scipy_version = scipy.__version__
+    except:
+        try:
+            scipy_version = scipy.stats.__version__
+        except:
+            scipy_version = 'unknown'
+    
+    system_info = {
+        'platform': platform.platform(),
+        'python_version': python_version,
+        'numpy_version': np.__version__,
+        'pandas_version': pd.__version__,
+        'scipy_version': scipy_version
+    }
+
+    # Prepare parameters for JSON (convert lists/tuples to lists for JSON serialization)
+    def convert_for_json(obj):
+        if isinstance(obj, (list, tuple)):
+            return [convert_for_json(item) for item in obj]
+        elif isinstance(obj, dict):
+            return {k: convert_for_json(v) for k, v in obj.items()}
+        elif isinstance(obj, (np.integer, np.floating)):
+            return obj.item()
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        elif isinstance(obj, Path):
+            return str(obj)
+        else:
+            return obj
+
+    # Create metadata dictionary
+    timestamp = datetime.datetime.now().isoformat()
+    metadata = {
+        'simulation_info': {
+            'timestamp': timestamp,
+            'simulation_dir': str(sim_path),
+            'fusang_version': fusang_version,
+        },
+        'parameters': {
+            'num_of_topology': num_of_topology,
+            'taxa_num': taxa_num,
+            'range_of_taxa_num': convert_for_json(range_of_taxa_num),
+            'len_of_msa_upper_bound': len_of_msa_upper_bound,
+            'len_of_msa_lower_bound': len_of_msa_lower_bound,
+            'num_of_process': num_of_process,
+            'distribution_of_internal_branch_length': convert_for_json(distribution_of_internal_branch_length),
+            'distribution_of_external_branch_length': convert_for_json(distribution_of_external_branch_length),
+            'range_of_mean_pairwise_divergence': convert_for_json(range_of_mean_pairwise_divergence),
+            'range_of_indel_substitution_rate': convert_for_json(range_of_indel_substitution_rate),
+            'max_indel_length': max_indel_length,
+            'max_length': max_length,
+            'seed': seed,
+            'batch_size': batch_size,
+            'indelible_path': str(indelible_path) if indelible_path else None,
+        },
+        'system_info': system_info,
+        'statistics': convert_for_json(stats),
+    }
+
+    if evaluation_results is not None:
+        metadata['evaluation'] = convert_for_json(evaluation_results)
+
+    # Write JSON file
+    json_file = sim_path / 'simulation_metadata.json'
+    with open(json_file, 'w', encoding='utf-8') as f:
+        json.dump(metadata, f, indent=2, ensure_ascii=False)
+
+    # Write summary.txt
+    summary_file = sim_path / 'summary.txt'
+    with open(summary_file, 'w', encoding='utf-8') as f:
+        f.write("=" * 80 + "\n")
+        f.write("Fusang Simulation Dataset Summary\n")
+        f.write("=" * 80 + "\n\n")
+
+        f.write("Simulation Information:\n")
+        f.write(f"  Timestamp: {timestamp}\n")
+        f.write(f"  Simulation Directory: {sim_path}\n")
+        f.write(f"  Fusang Version: {fusang_version}\n")
+        f.write("\n")
+
+        f.write("Parameters:\n")
+        f.write(f"  Number of Topologies: {num_of_topology}\n")
+        f.write(f"  Taxa Number: {taxa_num}\n")
+        f.write(f"  Range of Taxa: {range_of_taxa_num}\n")
+        f.write(f"  MSA Length Range: {len_of_msa_lower_bound} - {len_of_msa_upper_bound} bp\n")
+        f.write(f"  Number of Processes: {num_of_process}\n")
+        f.write(f"  Max Indel Length: {max_indel_length}\n")
+        f.write(f"  Seed: {seed}\n")
+        f.write(f"  Batch Size: {batch_size}\n")
+        f.write(f"  Internal Branch Length Distribution: {distribution_of_internal_branch_length}\n")
+        f.write(f"  External Branch Length Distribution: {distribution_of_external_branch_length}\n")
+        f.write(f"  Mean Pairwise Divergence Range: {range_of_mean_pairwise_divergence}\n")
+        f.write(f"  Indel Substitution Rate Range: {range_of_indel_substitution_rate}\n")
+        if max_length:
+            f.write(f"  Max MSA Length Filter: {max_length} bp\n")
+        f.write("\n")
+
+        f.write("Output Statistics:\n")
+        f.write(f"  Number of Topologies Generated: {stats.get('num_topologies', 0)}\n")
+        f.write(f"  Number of Trees: {stats.get('num_trees', 0)}\n")
+        f.write(f"  Number of FASTA Files: {stats.get('num_fasta_files', 0)}\n")
+        if stats.get('total_fasta_size_mb'):
+            f.write(f"  Total FASTA Size: {stats['total_fasta_size_mb']} MB\n")
+        f.write(f"  Number of NumPy Sequence Files: {stats.get('num_numpy_seq_files', 0)}\n")
+        f.write(f"  Number of NumPy Label Files: {stats.get('num_numpy_label_files', 0)}\n")
+        
+        if stats.get('numpy_seq_shape'):
+            f.write(f"  NumPy Sequence Shape: {stats['numpy_seq_shape']}\n")
+        if stats.get('numpy_label_shape'):
+            f.write(f"  NumPy Label Shape: {stats['numpy_label_shape']}\n")
+        
+        if stats.get('msa_length_stats'):
+            msa_stats = stats['msa_length_stats']
+            f.write(f"\n  MSA Length Statistics (sampled from {msa_stats['samples_measured']} files):\n")
+            f.write(f"    Min: {msa_stats['min']} bp\n")
+            f.write(f"    Max: {msa_stats['max']} bp\n")
+            f.write(f"    Mean: {msa_stats['mean']} bp\n")
+            f.write(f"    Median: {msa_stats['median']} bp\n")
+        f.write("\n")
+
+        f.write("Training Data Information:\n")
+        num_samples = stats.get('num_numpy_seq_files', 0)
+        if num_samples > 0:
+            f.write(f"  Total Training Samples: {num_samples}\n")
+            f.write(f"  Recommended Train/Val/Test Split:\n")
+            f.write(f"    Training Set (80%): ~{int(num_samples * 0.8)} samples\n")
+            f.write(f"    Validation Set (10%): ~{int(num_samples * 0.1)} samples\n")
+            f.write(f"    Test Set (10%): ~{int(num_samples * 0.1)} samples\n")
+            f.write("\n")
+            f.write(f"  Training Command Example:\n")
+            f.write(f"    uv run fusang.py train \\\n")
+            f.write(f"      --numpy_seq_dir {sim_path}/numpy_data/seq \\\n")
+            f.write(f"      --numpy_label_dir {sim_path}/numpy_data/label \\\n")
+            f.write(f"      --window_size {'240' if len_of_msa_upper_bound <= 1210 else '1200'} \\\n")
+            f.write(f"      --model_save_path model/<MODEL_NAME>.h5\n")
+        f.write("\n")
+
+        f.write("System Information:\n")
+        f.write(f"  Platform: {system_info['platform']}\n")
+        f.write(f"  Python Version: {system_info['python_version']}\n")
+        f.write(f"  NumPy Version: {system_info['numpy_version']}\n")
+        f.write(f"  Pandas Version: {system_info['pandas_version']}\n")
+        f.write(f"  SciPy Version: {system_info['scipy_version']}\n")
+        f.write("\n")
+
+        if evaluation_results is not None:
+            f.write("Evaluation Results:\n")
+            eval_stats = evaluation_results.get('statistics', {})
+            f.write(f"  Total Files Processed: {eval_stats.get('total_files', 0)}\n")
+            f.write(f"  Successful Inferences: {eval_stats.get('successful_inferences', 0)}\n")
+            f.write(f"  Failed Inferences: {eval_stats.get('failed_inferences', 0)}\n")
+            if eval_stats.get('successful_inferences', 0) > 0:
+                f.write(f"  Mean RF Distance: {eval_stats.get('mean_rf_distance', 0):.4f} ± {eval_stats.get('std_rf_distance', 0):.4f}\n")
+                f.write(f"  Mean Normalized RF: {eval_stats.get('mean_normalized_rf', 0):.4f} ± {eval_stats.get('std_normalized_rf', 0):.4f}\n")
+            f.write("\n")
+
+        f.write("=" * 80 + "\n")
+        f.write("For detailed information, see simulation_metadata.json\n")
+        f.write("=" * 80 + "\n")
+
+    if logger:
+        logger.log_detail(f"Metadata files generated:")
+        logger.log_detail(f"  - {json_file}")
+        logger.log_detail(f"  - {summary_file}")
+    elif verbose:
+        print(f"Metadata files generated:")
+        print(f"  - {json_file}")
+        print(f"  - {summary_file}")
 
 
 def run_full_simulation(simulation_dir, num_of_topology, taxa_num, range_of_taxa_num,
@@ -909,7 +1845,8 @@ def run_full_simulation(simulation_dir, num_of_topology, taxa_num, range_of_taxa
                        range_of_mean_pairwise_divergence, range_of_indel_substitution_rate,
                        max_indel_length, max_length=None, cleanup=True, verbose=False,
                        run_inference=False, evaluate_results=False, output_dir=None,
-                       sequence_type='standard', branch_model='gamma', beam_size=1, window_coverage=1):
+                       sequence_type='standard', branch_model='gamma', beam_size=1, window_coverage=1,
+                       indelible_path=None, seed=42, batch_size=1000):
     """
     Run the complete simulation pipeline.
 
@@ -930,97 +1867,162 @@ def run_full_simulation(simulation_dir, num_of_topology, taxa_num, range_of_taxa
     cleanup: Whether to remove simulate_data directory after completion
     verbose: Whether to show verbose output
     """
-    if verbose:
-        print("Starting full simulation pipeline...")
-
-    # Step 1: Generate topologies
-    if verbose:
-        print("Step 1: Generating topologies...")
-    run_simulation_topology(
-        simulation_dir, num_of_topology, taxa_num, range_of_taxa_num,
-        len_of_msa_upper_bound, len_of_msa_lower_bound, num_of_process,
-        distribution_of_internal_branch_length, distribution_of_external_branch_length,
-        range_of_mean_pairwise_divergence, range_of_indel_substitution_rate,
-        max_indel_length, verbose=verbose
-    )
-
-    # Step 2: Run INDELible
-    if verbose:
-        print("Step 2: Running INDELible...")
-    run_indelible(simulation_dir, verbose=verbose)
-
-    # Step 3: Extract FASTA data
-    if verbose:
-        print("Step 3: Extracting FASTA data...")
-    extract_fasta_data(simulation_dir, max_length=max_length, verbose=verbose)
-
-    # Step 4: Copy trees.txt
-    trees_src = Path(simulation_dir) / 'simulate_data' / 'trees.txt'
-    trees_dest = Path(simulation_dir) / 'label_file' / 'trees.txt'
-    if trees_src.exists():
-        trees_dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy(trees_src, trees_dest)
-
-    # Step 5: Generate numpy data
-    if verbose:
-        print("Step 4: Generating numpy training data...")
-    generate_numpy_data(simulation_dir, verbose=verbose)
-
-    # Step 6: Run inference and evaluation if requested
-    evaluation_results = None
-    if run_inference or (evaluate_results is True):
-        if verbose:
-            print("Step 5: Running inference and evaluation...")
-
-        fasta_dir = Path(simulation_dir) / 'fasta_file'
-        trees_file = Path(simulation_dir) / 'label_file' / 'trees.txt'
-
-        if not trees_file.exists():
-            # Try to get from simulate_data if cleanup hasn't happened yet
-            trees_file_alt = Path(simulation_dir) / 'simulate_data' / 'trees.txt'
-            if trees_file_alt.exists():
-                trees_file = trees_file_alt
-
-        if evaluate_results:
-            evaluation_results = evaluate_simulation_results(
-                str(fasta_dir), str(trees_file), output_dir=output_dir,
-                sequence_type=sequence_type, branch_model=branch_model,
-                beam_size=beam_size, window_coverage=window_coverage, verbose=verbose
-            )
-
-            if verbose:
-                stats = evaluation_results['statistics']
-                print(f"\nEvaluation Results:")
-                print(f"  Total files: {stats['total_files']}")
-                print(f"  Successful: {stats['successful_inferences']}")
-                print(f"  Failed: {stats['failed_inferences']}")
-                if stats['successful_inferences'] > 0:
-                    print(f"  Mean RF distance: {stats['mean_rf_distance']:.4f} ± {stats['std_rf_distance']:.4f}")
-                    print(f"  Mean normalized RF: {stats['mean_normalized_rf']:.4f} ± {stats['std_normalized_rf']:.4f}")
-
-    # Step 7: Cleanup if requested
-    if cleanup:
-        simulate_data_dir = Path(simulation_dir) / 'simulate_data'
-        if simulate_data_dir.exists():
-            if verbose:
-                print("Step 6: Cleaning up temporary files...")
-            shutil.rmtree(simulate_data_dir)
-
-    if verbose:
-        print("Simulation pipeline completed successfully!")
-
     sim_path = Path(simulation_dir)
-    result = {
-        'numpy_seq_dir': str(sim_path / 'numpy_file' / 'seq'),
-        'numpy_label_dir': str(sim_path / 'numpy_file' / 'label'),
-        'fasta_dir': str(sim_path / 'fasta_file'),
-        'trees_file': str(sim_path / 'label_file' / 'trees.txt')
-    }
+    sim_path.mkdir(parents=True, exist_ok=True)
+    
+    # Initialize logger
+    log_file_path = sim_path / 'simulation.log'
+    logger = SimulationLogger(log_file_path, verbose=verbose)
+    
+    try:
+        logger.log_summary("=" * 80)
+        logger.log_summary("Starting Full Simulation Pipeline")
+        logger.log_summary("=" * 80)
+        logger.log_detail(f"Simulation directory: {sim_path}")
+        logger.log_detail(f"Parameters:")
+        logger.log_detail(f"  - Number of topologies: {num_of_topology}")
+        logger.log_detail(f"  - Taxa number: {taxa_num}")
+        logger.log_detail(f"  - Range of taxa: {range_of_taxa_num}")
+        logger.log_detail(f"  - MSA length range: {len_of_msa_lower_bound} - {len_of_msa_upper_bound} bp")
+        logger.log_detail(f"  - Number of processes: {num_of_process}")
+        logger.log_detail(f"  - Max indel length: {max_indel_length}")
+        logger.log_detail(f"  - Seed: {seed}")
+        logger.log_detail(f"  - Batch size: {batch_size}")
+        logger.log_detail(f"  - Internal branch distribution: {distribution_of_internal_branch_length}")
+        logger.log_detail(f"  - External branch distribution: {distribution_of_external_branch_length}")
+        logger.log_detail(f"  - Mean pairwise divergence range: {range_of_mean_pairwise_divergence}")
+        logger.log_detail(f"  - Indel substitution rate range: {range_of_indel_substitution_rate}")
+        if max_length:
+            logger.log_detail(f"  - Max MSA length filter: {max_length} bp")
+        logger.log_detail("")
 
-    if evaluation_results is not None:
-        result['evaluation'] = evaluation_results
+        # Step 1: Generate topologies
+        logger.log_summary("Step 1/7: Generating topologies...")
+        logger.log_detail(f"Generating {num_of_topology} topologies with {num_of_process} processes")
+        run_simulation_topology(
+            simulation_dir, num_of_topology, taxa_num, range_of_taxa_num,
+            num_of_process, distribution_of_internal_branch_length,
+            distribution_of_external_branch_length, range_of_mean_pairwise_divergence,
+            seed=seed, verbose=False, logger=logger
+        )
+        logger.log_summary("  ✓ Topology generation completed")
 
-    return result
+        # Step 2: Generate sequences using INDELible
+        logger.log_summary("Step 2/7: Generating sequences with INDELible...")
+        logger.log_detail(f"Generating sequences for {num_of_topology} topologies")
+        run_simulation_sequence(
+            simulation_dir, taxa_num, num_of_topology, num_of_process,
+            len_of_msa_lower_bound, len_of_msa_upper_bound,
+            range_of_indel_substitution_rate, max_indel_length,
+            seed=seed, indelible_path=indelible_path, batch_size=batch_size, verbose=False, logger=logger
+        )
+        logger.log_summary("  ✓ Sequence generation completed")
+
+        # Step 3: Copy trees.txt to label_file directory
+        logger.log_detail("Copying trees.txt to label_file directory...")
+        trees_src = Path(simulation_dir) / 'simulate_data' / 'trees.txt'
+        trees_dest = Path(simulation_dir) / 'label_file' / 'trees.txt'
+        if trees_src.exists():
+            trees_dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy(trees_src, trees_dest)
+            logger.log_detail(f"Copied {trees_src} to {trees_dest}")
+
+        # Step 4: Extract FASTA data
+        logger.log_summary("Step 3/7: Extracting FASTA data...")
+        extract_fasta_data(simulation_dir, max_length=max_length, verbose=False, logger=logger)
+        logger.log_summary("  ✓ FASTA extraction completed")
+
+        # Step 5: Generate numpy data
+        logger.log_summary("Step 4/7: Generating numpy training data...")
+        generate_numpy_data(simulation_dir, verbose=False, logger=logger)
+        logger.log_summary("  ✓ NumPy data generation completed")
+
+        # Step 6: Run inference and evaluation if requested
+        evaluation_results = None
+        if run_inference or (evaluate_results is True):
+            logger.log_summary("Step 5/7: Running inference and evaluation...")
+
+            fasta_dir = Path(simulation_dir) / 'fasta_data'
+            trees_file = Path(simulation_dir) / 'label_file' / 'trees.txt'
+
+            if not trees_file.exists():
+                # Try to get from simulate_data if cleanup hasn't happened yet
+                trees_file_alt = Path(simulation_dir) / 'simulate_data' / 'trees.txt'
+                if trees_file_alt.exists():
+                    trees_file = trees_file_alt
+
+            if evaluate_results:
+                evaluation_results = evaluate_simulation_results(
+                    str(fasta_dir), str(trees_file), output_dir=output_dir,
+                    sequence_type=sequence_type, branch_model=branch_model,
+                    beam_size=beam_size, window_coverage=window_coverage, verbose=False, logger=logger
+                )
+
+                stats = evaluation_results['statistics']
+                logger.log_summary("  ✓ Evaluation completed")
+                logger.log_summary(f"    Total files: {stats['total_files']}")
+                logger.log_summary(f"    Successful: {stats['successful_inferences']}")
+                logger.log_summary(f"    Failed: {stats['failed_inferences']}")
+                if stats['successful_inferences'] > 0:
+                    logger.log_summary(f"    Mean RF distance: {stats['mean_rf_distance']:.4f} ± {stats['std_rf_distance']:.4f}")
+                    logger.log_summary(f"    Mean normalized RF: {stats['mean_normalized_rf']:.4f} ± {stats['std_normalized_rf']:.4f}")
+                
+                logger.log_detail("Evaluation Results:")
+                logger.log_detail(f"  Total files: {stats['total_files']}")
+                logger.log_detail(f"  Successful: {stats['successful_inferences']}")
+                logger.log_detail(f"  Failed: {stats['failed_inferences']}")
+                if stats['successful_inferences'] > 0:
+                    logger.log_detail(f"  Mean RF distance: {stats['mean_rf_distance']:.4f} ± {stats['std_rf_distance']:.4f}")
+                    logger.log_detail(f"  Mean normalized RF: {stats['mean_normalized_rf']:.4f} ± {stats['std_normalized_rf']:.4f}")
+
+        # Step 7: Cleanup if requested
+        if cleanup:
+            simulate_data_dir = Path(simulation_dir) / 'simulate_data'
+            if simulate_data_dir.exists():
+                logger.log_summary("Step 6/7: Cleaning up temporary files...")
+                logger.log_detail(f"Removing directory: {simulate_data_dir}")
+                shutil.rmtree(simulate_data_dir)
+                logger.log_summary("  ✓ Cleanup completed")
+
+        logger.log_summary("Step 7/7: Generating metadata files...")
+        try:
+            _generate_simulation_metadata(
+                simulation_dir, num_of_topology, taxa_num, range_of_taxa_num,
+                len_of_msa_upper_bound, len_of_msa_lower_bound, num_of_process,
+                distribution_of_internal_branch_length, distribution_of_external_branch_length,
+                range_of_mean_pairwise_divergence, range_of_indel_substitution_rate,
+                max_indel_length, max_length, seed, batch_size, indelible_path,
+                evaluation_results, verbose=False, logger=logger
+            )
+            logger.log_summary("  ✓ Metadata files generated")
+        except Exception as e:
+            logger.log_summary(f"  ✗ Error generating metadata files: {e}")
+            logger.log_detail(f"Error details: {type(e).__name__}: {e}")
+            import traceback
+            logger.log_detail(traceback.format_exc())
+            # Re-raise to ensure the error is visible
+            raise
+        
+        logger.log_summary("=" * 80)
+        logger.log_summary("Simulation pipeline completed successfully!")
+        logger.log_summary(f"Log file saved to: {log_file_path}")
+        logger.log_summary("=" * 80)
+
+        sim_path = Path(simulation_dir)
+        result = {
+            'numpy_seq_dir': str(sim_path / 'numpy_data' / 'seq'),
+            'numpy_label_dir': str(sim_path / 'numpy_data' / 'label'),
+            'fasta_dir': str(sim_path / 'fasta_data'),
+            'trees_file': str(sim_path / 'label_file' / 'trees.txt'),
+            'log_file': str(log_file_path)
+        }
+
+        if evaluation_results is not None:
+            result['evaluation'] = evaluation_results
+
+        return result
+    finally:
+        logger.close()
 
 
 # ============================================================================
@@ -1513,7 +2515,7 @@ def train_fusang_model(numpy_seq_dir, numpy_label_dir, window_size=240, epochs=5
 
 def _add_inference_args(parser):
     """Add inference arguments to a parser (shared between infer subcommand and legacy mode).
-    
+
     Avoids using argument groups to prevent deprecation warnings in newer argparse versions.
     """
     # Add directly to parser (avoids deprecation warning with nested argument groups)
@@ -1621,19 +2623,22 @@ For detailed help on a subcommand, use: fusang <subcommand> --help
         description='Generate simulated phylogenetic data for model training using INDELible.',
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    sim_parser.add_argument("--simulation_dir", type=str, required=True, help="Path to simulation directory containing code/ and indelible")
+    sim_parser.add_argument("--simulation_dir", type=str, required=True, help="Path to simulation output directory")
     sim_parser.add_argument("--num_of_topology", type=int, required=True, help="Number of MSAs to simulate")
     sim_parser.add_argument("--taxa_num", type=int, required=True, help="Number of taxa in final tree")
-    sim_parser.add_argument("--range_of_taxa_num", type=str, required=True, help="Range of taxa numbers [lower, upper] (e.g., '[5, 40]')")
-    sim_parser.add_argument("--len_of_msa_upper_bound", type=int, required=True, help="Upper bound of MSA length")
-    sim_parser.add_argument("--len_of_msa_lower_bound", type=int, required=True, help="Lower bound of MSA length")
+    sim_parser.add_argument("--range_of_taxa_num", type=str, default='[5, 40]', help="Range of taxa numbers [lower, upper] (default: '[5, 40]')")
+    sim_parser.add_argument("--len_of_msa_upper_bound", type=int, default=1200, help="Upper bound of MSA length (default: 1200)")
+    sim_parser.add_argument("--len_of_msa_lower_bound", type=int, default=240, help="Lower bound of MSA length (default: 240)")
     sim_parser.add_argument("--num_of_process", type=int, default=24, help="Number of processes for parallel execution (default: 24)")
     sim_parser.add_argument("--distribution_of_internal_branch_length", type=str, default='[1, 0.5, 0.3]', help="Internal branch length distribution [type, param1, param2] (default: '[1, 0.5, 0.3]')")
     sim_parser.add_argument("--distribution_of_external_branch_length", type=str, default='[1, 0.5, 0.3]', help="External branch length distribution [type, param1, param2] (default: '[1, 0.5, 0.3]')")
     sim_parser.add_argument("--range_of_mean_pairwise_divergence", type=str, default='[0.03, 0.3]', help="Range of mean pairwise divergence [min, max] (default: '[0.03, 0.3]')")
     sim_parser.add_argument("--range_of_indel_substitution_rate", type=str, default='[0.01, 0.25]', help="Range of indel substitution rate [min, max] (default: '[0.01, 0.25]')")
-    sim_parser.add_argument("--max_indel_length", type=int, required=True, help="Maximum indel length")
+    sim_parser.add_argument("--max_indel_length", type=int, default=10, help="Maximum indel length (default: 10)")
     sim_parser.add_argument("--max_length", type=int, default=None, help="Maximum MSA length to keep (default: no limit)")
+    sim_parser.add_argument("--indelible_path", type=str, default=None, help="Path to INDELible executable (default: auto-detect from simulation/indelible relative to fusang.py)")
+    sim_parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility (default: 42)")
+    sim_parser.add_argument("--batch_size", type=int, default=1000, help="Batch size for parallel processing (default: 1000)")
     sim_parser.add_argument("--no-cleanup", action="store_true", help="Do not remove simulate_data directory after completion")
     sim_parser.add_argument("--evaluate", action="store_true", help="Run inference and evaluation on generated data")
     sim_parser.add_argument("--evaluation_output", type=str, default=None, help="Directory to save evaluation results (default: simulation_dir/evaluation)")
@@ -1753,7 +2758,8 @@ For detailed help on a subcommand, use: fusang <subcommand> --help
                 verbose=verbose, run_inference=args.evaluate, evaluate_results=args.evaluate,
                 output_dir=eval_output_dir, sequence_type=args.sequence_type,
                 branch_model=args.branch_model, beam_size=args.beam_size,
-                window_coverage=args.window_coverage
+                window_coverage=args.window_coverage,
+                indelible_path=args.indelible_path, seed=args.seed, batch_size=args.batch_size
             )
 
             if verbose:

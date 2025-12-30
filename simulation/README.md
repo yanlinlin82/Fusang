@@ -1,0 +1,160 @@
+# Simulation Data Generation Scripts
+
+This directory contains scripts to generate simulation datasets for training the 12 Fusang models.
+
+## Scripts
+
+### `gen-dataset.sh`
+
+Generates a single simulation dataset. This script wraps `fusang.py simulate` with the appropriate parameters.
+
+**Usage:**
+```bash
+./gen-dataset.sh <out-dir> <seed> \
+  <num_of_topology> <taxa_num> <range_of_taxa_num> \
+  <len_of_msa_lower_bound> <len_of_msa_upper_bound> <num_of_process> \
+  <distribution_of_internal_branch_length> <distribution_of_external_branch_length> \
+  <range_of_mean_pairwise_divergence> \
+  <indel_substitution_rate_lower_bound> <indel_substitution_rate_upper_bound> \
+  <max_indel_length>
+```
+
+**Example:**
+```bash
+./gen-dataset.sh out/S1G 42 600 5 '[5, 40]' \
+  200 200 24 \
+  '[1, 0.5, 0.3]' '[1, 0.5, 0.3]' \
+  '[0.03, 0.3]' \
+  0.01 0.25 10
+```
+
+### `batch-gen-datasets.sh`
+
+Generates all 12 datasets required for training the 12 models. This script calls `gen-dataset.sh` 12 times with the appropriate parameters for each model.
+
+**Usage:**
+```bash
+./batch-gen-datasets.sh
+```
+
+This will generate datasets in `out/` directory:
+- `out/S1U`, `out/S2U`, `out/S1G`, `out/S2G` (Standard sequences)
+- `out/C1U`, `out/C2U`, `out/C1G`, `out/C2G` (Coding sequences)
+- `out/N1U`, `out/N2U`, `out/N1G`, `out/N2G` (Noncoding sequences)
+
+## Model-Dataset Mapping
+
+Each dataset corresponds to a model file in `../model/`:
+
+| Dataset | Model File | Sequence Type | Model # | Branch Model | MSA Length |
+|---------|-----------|---------------|---------|--------------|------------|
+| S1U     | S1U.h5    | Standard      | 1       | Uniform      | ≤ 1210 bp  |
+| S1G     | S1G.h5    | Standard      | 1       | Gamma        | ≤ 1210 bp  |
+| S2U     | S2U.h5    | Standard      | 2       | Uniform      | > 1210 bp  |
+| S2G     | S2G.h5    | Standard      | 2       | Gamma        | > 1210 bp  |
+| C1U     | C1U.h5    | Coding        | 1       | Uniform      | ≤ 1210 bp  |
+| C1G     | C1G.h5    | Coding        | 1       | Gamma        | ≤ 1210 bp  |
+| C2U     | C2U.h5    | Coding        | 2       | Uniform      | > 1210 bp  |
+| C2G     | C2G.h5    | Coding        | 2       | Gamma        | > 1210 bp  |
+| N1U     | N1U.h5    | Noncoding     | 1       | Uniform      | ≤ 1210 bp  |
+| N1G     | N1G.h5    | Noncoding     | 1       | Gamma        | ≤ 1210 bp  |
+| N2U     | N2U.h5    | Noncoding     | 2       | Uniform      | > 1210 bp  |
+| N2G     | N2G.h5    | Noncoding     | 2       | Gamma        | > 1210 bp  |
+
+## Dataset Parameters
+
+### Model 1 (MSA length ≤ 1210 bp)
+- **Number of topologies**: 600 (1/1000 of full training set)
+- **MSA length**: 200-200 bp (fixed)
+- **Max indel length**: 10
+
+### Model 2 (MSA length > 1210 bp)
+- **Number of topologies**: 6000 (1/1000 of full training set)
+- **MSA length**: 1000-1000 bp (fixed)
+- **Max indel length**: 50
+
+### Common Parameters
+- **Taxa number**: 5
+- **Range of taxa**: [5, 40]
+- **Number of processes**: 24
+- **Seed**: 42
+
+### Sequence Type Specific Parameters
+
+#### Standard (S)
+- **Mean pairwise divergence**: [0.03, 0.3]
+- **Indel substitution rate**: 0.01-0.25
+
+#### Coding (C)
+- **Mean pairwise divergence**: [0.03, 0.2]
+- **Indel substitution rate**: 0.01-0.1
+
+#### Noncoding (N)
+- **Mean pairwise divergence**: [0.15, 0.3]
+- **Indel substitution rate**: 0.1-0.25
+
+### Branch Model Parameters
+
+#### Gamma (G)
+- **Internal branch length**: [1, 0.5, 0.3] (gamma distribution)
+- **External branch length**: [1, 0.5, 0.3] (gamma distribution)
+
+#### Uniform (U)
+- **Internal branch length**: [0, 0.001, 0.3] (uniform distribution)
+- **External branch length**: [0, 0.001, 0.3] (uniform distribution)
+
+## Output Structure
+
+Each dataset directory contains:
+```
+out/<MODEL>/
+├── label_file/
+│   ├── newick.csv      # Generated tree topologies
+│   └── trees.txt       # True trees for evaluation
+├── simulate_data/      # Temporary INDELible output (removed after cleanup)
+├── fasta_data/         # Extracted FASTA files
+└── numpy_data/
+    ├── seq/            # Sequence numpy files for training
+    └── label/           # Label numpy files for training
+```
+
+## Prerequisites
+
+1. **INDELible executable**: Must be present in `simulation/indelible`
+2. **Python dependencies**: All dependencies should be installed via `uv`
+
+## Quick Start
+
+1. **Generate all datasets** (recommended for training all models):
+```bash
+cd simulation
+./batch-gen-datasets.sh
+```
+
+2. **Generate a single dataset** (for testing or specific model):
+```bash
+cd simulation
+./gen-dataset.sh out/S1G 42 600 5 '[5, 40]' 200 200 24 '[1, 0.5, 0.3]' '[1, 0.5, 0.3]' '[0.03, 0.3]' 0.01 0.25 10
+```
+
+## Training Models
+
+After generating the datasets, you can train each model using:
+
+```bash
+uv run fusang.py train \
+  --numpy_seq_dir simulation/out/S1G/numpy_data/seq \
+  --numpy_label_dir simulation/out/S1G/numpy_data/label \
+  --window_size 240 \
+  --model_save_path model/S1G.h5
+```
+
+## Notes
+
+- The datasets generated by this script are 1/1000 of the full training set size (as specified in the paper)
+- For full training, multiply the `num_of_topology` values by 1000:
+  - Model 1: 600,000 topologies
+  - Model 2: 6,000,000 topologies
+- The scripts automatically find the `indelible` executable in the `simulation/` directory
+- All datasets use the same seed (42) for reproducibility
+

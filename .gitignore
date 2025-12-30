@@ -1,2 +1,3 @@
 .venv*/
-dl_output/
+dl_output*/
+simulation/out*/

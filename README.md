@@ -51,6 +51,32 @@ The meaning of these two mandatory parameter:
 
 `-s, --save_prefix`  The prefix of output file, the predicted tree will be saved on the directory of `dl_output` , with the prefix that set in this parameter. The output file contains a phylogenetic tree in Newick format. You can see `example_dl_output` to find the example of predicted tree.
 
+**Viewing the tree structure:**
+
+You can pipe the output directly to `treeview.py` to visualize the tree structure in ASCII format:
+
+```sh
+uv run fusang.py example_msa/a.fas -q | uv run treeview.py
+```
+
+This command will:
+
+1. Run Fusang on the input MSA file (`example_msa/a.fas`) with quiet mode (`-q`)
+2. Pipe the Newick format output to `treeview.py`
+3. Display the tree in a human-readable ASCII format
+
+You can also use `treeview.py` to view a saved tree file:
+
+```sh
+uv run treeview.py dl_output/your_prefix.txt
+```
+
+Or pipe from stdin:
+
+```sh
+cat output.tree | uv run treeview.py
+```
+
 ---
 
 ### 2. Parameter setting

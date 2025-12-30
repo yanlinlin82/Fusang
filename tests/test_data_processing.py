@@ -1,31 +1,7 @@
 """Tests for data processing functions."""
-import functools
 from io import StringIO
 import numpy as np
-import pytest
-from fusang import cmp, _process_alignment, get_numpy, initialize_quartet_data
-
-
-class TestCmp:
-    """Tests for cmp function."""
-
-    def test_basic_comparison(self):
-        """Test basic numeric comparison."""
-        assert cmp('1', '2') == -1
-        assert cmp('2', '1') == 1
-        assert cmp('5', '5') == 0
-
-    def test_larger_numbers(self):
-        """Test with larger numbers."""
-        assert cmp('10', '2') == 1
-        assert cmp('100', '99') == 1
-        assert cmp('50', '50') == 0
-
-    def test_used_in_sorting(self):
-        """Test that cmp works with sorted."""
-        data = ['10', '2', '5', '1', '20']
-        sorted_data = sorted(data, key=functools.cmp_to_key(cmp))
-        assert sorted_data == ['1', '2', '5', '10', '20']
+from fusang import _process_alignment, get_numpy, initialize_quartet_data
 
 
 class TestProcessAlignment:
@@ -165,4 +141,3 @@ class TestInitializeQuartetData:
         # C(10, 4) = 210
         assert len(comb_of_id) == 210
         assert len(leave_node_name) == 10
-

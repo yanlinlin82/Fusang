@@ -27,6 +27,38 @@ uv sync
 
 or see [Environment_setting.md](Environment_setting.md) for details
 
+## Development
+
+### Installing Development Dependencies
+
+To install development dependencies (including pytest for running unit tests):
+
+```sh
+uv sync --with dev
+```
+
+This will install all production dependencies plus development dependencies defined in `[dependency-groups]` section of `pyproject.toml`.
+
+### Running Unit Tests
+
+The project includes unit tests for core algorithm functions in `fusang.py`. To run the tests:
+
+```sh
+# Run all tests
+uv run pytest tests/
+
+# Run with verbose output
+uv run pytest tests/ -v
+
+# Run a specific test file
+uv run pytest tests/test_math_utils.py
+
+# Run tests with coverage report (requires pytest-cov)
+uv run pytest tests/ --cov=fusang --cov-report=html
+```
+
+For more details about the test suite, see [tests/README.md](tests/README.md).
+
 ## Example of usage
 
 ### 1. Quick start

@@ -1109,7 +1109,10 @@ def calculate_rf_distance(tree1_str, tree2_str, unrooted=True):
         tree1 = Tree(tree1_str)
         tree2 = Tree(tree2_str)
 
-        rf_distance, max_rf = tree1.robinson_foulds(tree2, unrooted_trees=unrooted)
+        result = tree1.robinson_foulds(tree2, unrooted_trees=unrooted)
+        # robinson_foulds returns a list: [rf_distance, max_rf, ...]
+        rf_distance = result[0]
+        max_rf = result[1]
         normalized_rf = rf_distance / max_rf if max_rf > 0 else 0.0
 
         return rf_distance, normalized_rf, max_rf

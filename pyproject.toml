@@ -11,3 +11,22 @@ dependencies = [
     "pandas>=2.3.3",
     "tensorflow[and-cuda]>=2.20.0",
 ]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+]
+
+[[tool.uv.index]]
+url = "https://mirrors.aliyun.com/pypi/simple/"
+default = true
+
+[tool.pytest.ini_options]
+# Filter warnings from third-party dependencies
+filterwarnings = [
+    # Ignore deprecation warnings from ete3 library (third-party)
+    "ignore::DeprecationWarning:ete3",
+    "ignore:.*cgi.*:DeprecationWarning",
+    # Ignore FutureWarning from keras/tensorflow (third-party)
+    "ignore::FutureWarning",
+]

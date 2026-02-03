@@ -1,3 +1,5 @@
 .venv*/
 dl_output*/
 simulation/out*/
+evaluate_out*/
+new_model*/

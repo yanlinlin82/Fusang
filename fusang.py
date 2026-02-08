@@ -1479,7 +1479,7 @@ class SimulationLogger:
         self.verbose = verbose
         self.log_file = None
         self._open_log_file()
-    
+
     def _open_log_file(self):
         """Open log file for writing."""
         self.log_file = open(self.log_file_path, 'w', encoding='utf-8')
@@ -1488,7 +1488,7 @@ class SimulationLogger:
         self.log_file.write(f"Started at: {datetime.datetime.now().isoformat()}\n")
         self.log_file.write("=" * 80 + "\n\n")
         self.log_file.flush()
-    
+
     def log_detail(self, message, timestamp=True):
         """Write detailed message to log file only."""
         if timestamp:
@@ -1497,7 +1497,7 @@ class SimulationLogger:
         else:
             self.log_file.write(f"{message}\n")
         self.log_file.flush()
-    
+
     def log_summary(self, message):
         """Write summary message to both screen and log file."""
         timestamp_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -1506,7 +1506,7 @@ class SimulationLogger:
         self.log_file.flush()
         if self.verbose:
             print(message)
-    
+
     def log_both(self, message, timestamp=True):
         """Write message to both screen and log file."""
         if timestamp:
@@ -1518,7 +1518,7 @@ class SimulationLogger:
         self.log_file.flush()
         if self.verbose:
             print(message)
-    
+
     def close(self):
         """Close log file."""
         if self.log_file:
@@ -1527,10 +1527,10 @@ class SimulationLogger:
             self.log_file.write("=" * 80 + "\n")
             self.log_file.close()
             self.log_file = None
-    
+
     def __enter__(self):
         return self
-    
+
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()
         return False
@@ -1582,12 +1582,12 @@ def _collect_simulation_statistics(simulation_dir):
     if fasta_dir.exists():
         fasta_files = [f for f in fasta_dir.iterdir() if f.is_file() and '.fas' in f.name and 'TRUE' in f.name]
         stats['num_fasta_files'] = len(fasta_files)
-        
+
         # Calculate total FASTA file size
         total_fasta_size = sum(f.stat().st_size for f in fasta_files)
         stats['total_fasta_size_bytes'] = total_fasta_size
         stats['total_fasta_size_mb'] = round(total_fasta_size / (1024 * 1024), 2)
-        
+
         # Get MSA length statistics from FASTA files
         msa_lengths = []
         for fasta_file in fasta_files[:min(100, len(fasta_files))]:  # Sample first 100 files
@@ -1598,7 +1598,7 @@ def _collect_simulation_statistics(simulation_dir):
                     msa_lengths.append(len(alignment[0].seq))
             except:
                 pass
-        
+
         if msa_lengths:
             stats['msa_length_stats'] = {
                 'min': int(min(msa_lengths)),
@@ -1675,7 +1675,7 @@ def _generate_simulation_metadata(simulation_dir, num_of_topology, taxa_num, ran
             scipy_version = scipy.stats.__version__
         except:
             scipy_version = 'unknown'
-    
+
     system_info = {
         'platform': platform.platform(),
         'python_version': python_version,
@@ -1774,12 +1774,12 @@ def _generate_simulation_metadata(simulation_dir, num_of_topology, taxa_num, ran
             f.write(f"  Total FASTA Size: {stats['total_fasta_size_mb']} MB\n")
         f.write(f"  Number of NumPy Sequence Files: {stats.get('num_numpy_seq_files', 0)}\n")
         f.write(f"  Number of NumPy Label Files: {stats.get('num_numpy_label_files', 0)}\n")
-        
+
         if stats.get('numpy_seq_shape'):
             f.write(f"  NumPy Sequence Shape: {stats['numpy_seq_shape']}\n")
         if stats.get('numpy_label_shape'):
             f.write(f"  NumPy Label Shape: {stats['numpy_label_shape']}\n")
-        
+
         if stats.get('msa_length_stats'):
             msa_stats = stats['msa_length_stats']
             f.write(f"\n  MSA Length Statistics (sampled from {msa_stats['samples_measured']} files):\n")
@@ -1869,11 +1869,11 @@ def run_full_simulation(simulation_dir, num_of_topology, taxa_num, range_of_taxa
     """
     sim_path = Path(simulation_dir)
     sim_path.mkdir(parents=True, exist_ok=True)
-    
+
     # Initialize logger
     log_file_path = sim_path / 'simulation.log'
     logger = SimulationLogger(log_file_path, verbose=verbose)
-    
+
     try:
         logger.log_summary("=" * 80)
         logger.log_summary("Starting Full Simulation Pipeline")
@@ -1966,7 +1966,7 @@ def run_full_simulation(simulation_dir, num_of_topology, taxa_num, range_of_taxa
                 if stats['successful_inferences'] > 0:
                     logger.log_summary(f"    Mean RF distance: {stats['mean_rf_distance']:.4f} ± {stats['std_rf_distance']:.4f}")
                     logger.log_summary(f"    Mean normalized RF: {stats['mean_normalized_rf']:.4f} ± {stats['std_normalized_rf']:.4f}")
-                
+
                 logger.log_detail("Evaluation Results:")
                 logger.log_detail(f"  Total files: {stats['total_files']}")
                 logger.log_detail(f"  Successful: {stats['successful_inferences']}")
@@ -2002,7 +2002,7 @@ def run_full_simulation(simulation_dir, num_of_topology, taxa_num, range_of_taxa
             logger.log_detail(traceback.format_exc())
             # Re-raise to ensure the error is visible
             raise
-        
+
         logger.log_summary("=" * 80)
         logger.log_summary("Simulation pipeline completed successfully!")
         logger.log_summary(f"Log file saved to: {log_file_path}")

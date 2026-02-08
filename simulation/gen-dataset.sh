@@ -58,6 +58,23 @@ fi
 # Create output directory structure
 mkdir -pv "${out_dir}"
 
+# Check if simulation has already been completed
+metadata_file="${out_dir}/simulation_metadata.json"
+numpy_data_dir="${out_dir}/numpy_data"
+
+if [ -f "${metadata_file}" ] && [ -d "${numpy_data_dir}" ]; then
+    # Check if numpy_data directory contains files
+    if [ "$(ls -A "${numpy_data_dir}" 2>/dev/null)" ]; then
+        echo "=========================================="
+        echo "Dataset already exists: ${out_dir}"
+        echo "=========================================="
+        echo "Found existing simulation metadata and numpy data."
+        echo "Skipping generation to avoid duplicate execution."
+        echo "=========================================="
+        exit 0
+    fi
+fi
+
 echo "=========================================="
 echo "Generating dataset: ${out_dir}"
 echo "=========================================="
@@ -74,21 +91,21 @@ echo "=========================================="
 # Run fusang.py simulate command
 # Note: --verbose is a global argument, must come before the subcommand
 time uv run "${project_root}/fusang.py" --verbose simulate \
-    --simulation_dir "${out_dir}" \
-    --num_of_topology ${num_of_topology} \
-    --taxa_num ${taxa_num} \
+    -o "${out_dir}" \
+    -n ${num_of_topology} \
+    -t ${taxa_num} \
     --range_of_taxa_num "${range_of_taxa_num}" \
     --len_of_msa_lower_bound ${len_of_msa_lower_bound} \
     --len_of_msa_upper_bound ${len_of_msa_upper_bound} \
-    --num_of_process ${num_of_process} \
+    -p ${num_of_process} \
     --distribution_of_internal_branch_length "${distribution_of_internal_branch_length}" \
     --distribution_of_external_branch_length "${distribution_of_external_branch_length}" \
     --range_of_mean_pairwise_divergence "${range_of_mean_pairwise_divergence}" \
     --range_of_indel_substitution_rate "[${indel_substitution_rate_lower_bound}, ${indel_substitution_rate_upper_bound}]" \
     --max_indel_length ${max_indel_length} \
     --indelible_path "${indelible_path}" \
-    --seed ${seed} \
-    --batch_size 1000
+    -S ${seed} \
+    -b 1000
 
 if [ $? -eq 0 ]; then
     echo "=========================================="
@@ -100,4 +117,3 @@ else
     echo "=========================================="
     exit 1
 fi
-

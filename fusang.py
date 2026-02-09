@@ -138,6 +138,11 @@ else:
 # TensorFlow and Keras are imported lazily when needed (see _import_tensorflow function)
 
 
+def _print_stderr(message, end='\n'):
+    """Write a status line to stderr without polluting stdout."""
+    print(message, flush=True, end=end, file=sys.stderr)
+
+
 # ============================================================================
 # Core Utility Functions
 # ============================================================================
@@ -191,7 +196,7 @@ def get_current_topology_id(quart_key, cluster_1, cluster_2):
     elif ans == {'0', '3'} or ans == {'1', '2'}:
         return 2
     else:
-        print('Error of function get_current_topology_id, exit the program')
+        _print_stderr('Error of function get_current_topology_id, exit the program')
         sys.exit(1)
 
 
@@ -217,8 +222,8 @@ def judge_tree_score(tree, quart_distribution, new_addition_taxa, dic_for_leave_
         try:
             crt_tree.prune(list(quart))
         except Exception:
-            print('Error of pruning 4 taxa from current tree, the current tree is:')
-            print(crt_tree)
+            _print_stderr('Error of pruning 4 taxa from current tree, the current tree is:')
+            _print_stderr(str(crt_tree))
             sys.exit(1)
 
         quart_key = "".join(sorted(list(quart)))
@@ -514,12 +519,15 @@ def _import_tensorflow():
     """Lazy import TensorFlow and Keras to avoid slow startup when not needed."""
     global tf, layers, models, optimizers
     if 'tf' not in globals():
+        _print_stderr("Initializing TensorFlow (this may take a moment)...")
         import tensorflow as tf
+        _print_stderr("TensorFlow initialized. Importing Keras...")
         from keras import layers, models, optimizers
         globals()['tf'] = tf
         globals()['layers'] = layers
         globals()['models'] = models
         globals()['optimizers'] = optimizers
+        _print_stderr("TensorFlow and Keras ready.", end='\n')
     return tf, layers, models, optimizers
 
 
@@ -528,7 +536,9 @@ def get_dl_model_1200():
     Get the definition of DL model for sequences longer than 1200.
     This model aims to solve the default case for sequences with length larger than 1200.
     """
+    _print_stderr("Importing TensorFlow...")
     _, layers, models, _ = _import_tensorflow()
+    _print_stderr("TensorFlow imported. Creating model architecture (1200)...")
     conv_x=[4,1,1,1,1,1,1,1]
     conv_y=[1,2,2,2,2,2,2,2]
     pool=[1,4,4,4,2,2,2,1]
@@ -562,10 +572,12 @@ def get_dl_model_1200():
 
 def get_dl_model_240():
     """
-    Get the definition of DL model for sequences up to 1210.
+    Get the definition of DL model for sequences up to 240.
     This model aims to solve the short length case for sequences with length larger than 240.
     """
+    _print_stderr("Importing TensorFlow...")
     _, layers, models, _ = _import_tensorflow()
+    _print_stderr("TensorFlow imported. Creating model architecture (240)...")
     conv_x=[4,1,1,1,1,1,1,1]
     conv_y=[1,2,2,2,2,2,2,2]
     pool=[1,2,2,2,2,2,2,2]
@@ -673,10 +685,10 @@ def parse_msa_file(msa_dir):
                 save_alignment.seek(0)  # Reset to beginning for reading
                 return save_alignment, taxa_name, len_of_msa, taxa_num
             except Exception:
-                print('Something wrong about your msa file, please check your msa file')
+                _print_stderr('Something wrong about your msa file, please check your msa file')
                 sys.exit(1)
 
-    print('we do not support this format of msa')
+    _print_stderr('we do not support this format of msa')
     sys.exit(1)
 
 
@@ -940,7 +952,7 @@ def run_simulation_topology(simulation_dir, num_of_topology, taxa_num, range_of_
     output_newick = label_file_dir / 'newick.csv'
 
     if verbose:
-        print(f"Generating {num_of_topology} topologies...")
+        _print_stderr(f"Generating {num_of_topology} topologies...")
 
     # Set up multiprocessing
     if num_of_process <= 0:
@@ -974,7 +986,7 @@ def run_simulation_topology(simulation_dir, num_of_topology, taxa_num, range_of_
     if logger:
         logger.log_detail(f"Generated {len(csv_list)} topologies and saved to '{output_newick}'.")
     elif verbose:
-        print(f"Generated {len(csv_list)} topologies and saved to '{output_newick}'.")
+        _print_stderr(f"Generated {len(csv_list)} topologies and saved to '{output_newick}'.")
 
     return output_newick
 
@@ -1088,7 +1100,7 @@ def _write_control_file_and_run_indelible(args):
     try:
         subprocess.run([str(indelible_path), str(out_file)], cwd=str(batch_out_dir), check=True)
     except subprocess.CalledProcessError as e:
-        print(f"Command failed with return code {e.returncode}")
+        _print_stderr(f"Command failed with return code {e.returncode}")
         raise
 
 
@@ -1176,7 +1188,7 @@ def run_simulation_sequence(simulation_dir, taxa_num, num_of_topology, num_of_pr
     if logger:
         logger.log_detail(f"Generating sequences for {num_of_topology} topologies...")
     elif verbose:
-        print(f"Generating sequences for {num_of_topology} topologies...")
+        _print_stderr(f"Generating sequences for {num_of_topology} topologies...")
 
     # Set random seed
     np.random.seed(seed)
@@ -1242,7 +1254,7 @@ def run_simulation_sequence(simulation_dir, taxa_num, num_of_topology, num_of_pr
     if logger:
         logger.log_detail(f"Processing {len(batch_args)} batches with batch size {batch_size}...")
     elif verbose:
-        print(f"Processing {len(batch_args)} batches with batch size {batch_size}...")
+        _print_stderr(f"Processing {len(batch_args)} batches with batch size {batch_size}...")
 
     with Pool(n_cores) as pool:
         pool.map(_write_control_file_and_run_indelible, batch_args)
@@ -1251,7 +1263,7 @@ def run_simulation_sequence(simulation_dir, taxa_num, num_of_topology, num_of_pr
     if logger:
         logger.log_detail("Combining trees.txt files from batches...")
     elif verbose:
-        print("Combining trees.txt files from batches...")
+        _print_stderr("Combining trees.txt files from batches...")
 
     trees_txt_path = simulate_data_dir / 'trees.txt'
     if trees_txt_path.exists():
@@ -1277,7 +1289,7 @@ def run_simulation_sequence(simulation_dir, taxa_num, num_of_topology, num_of_pr
                             outfile.writelines(lines[6:])
 
     if verbose:
-        print(f"Sequence generation completed. Results in {simulate_data_dir}")
+        _print_stderr(f"Sequence generation completed. Results in {simulate_data_dir}")
 
 
 def _get_msa_length(msa_file):
@@ -1320,7 +1332,7 @@ def extract_fasta_data(simulation_dir, max_length=None, verbose=False, logger=No
         max_length = 1e10
 
     if verbose:
-        print(f"Extracting FASTA files from {simulate_data_dir}...")
+        _print_stderr(f"Extracting FASTA files from {simulate_data_dir}...")
 
     # Get all files in simulate_data directory (including batch subdirectories)
     file_list = []
@@ -1335,7 +1347,7 @@ def extract_fasta_data(simulation_dir, max_length=None, verbose=False, logger=No
                     file_list.append(str(subitem.relative_to(simulate_data_dir)))
 
     if verbose:
-        print(f"Found {len(file_list)} FASTA files to extract")
+        _print_stderr(f"Found {len(file_list)} FASTA files to extract")
 
     # Extract files in parallel
     extract_args = [(fname, simulate_data_dir, fasta_data_dir, max_length) for fname in file_list]
@@ -1343,7 +1355,7 @@ def extract_fasta_data(simulation_dir, max_length=None, verbose=False, logger=No
         pool.map(_extract_fasta_file, extract_args)
 
     if verbose:
-        print(f"FASTA extraction completed. Results in {fasta_data_dir}")
+        _print_stderr(f"FASTA extraction completed. Results in {fasta_data_dir}")
 
 
 def _assign_label(tree_str):
@@ -1417,7 +1429,7 @@ def generate_numpy_data(simulation_dir, verbose=False, logger=None):
         raise FileNotFoundError(f"Trees file not found: {trees_txt_path}")
 
     if verbose:
-        print(f"Reading trees from {trees_txt_path}...")
+        _print_stderr(f"Reading trees from {trees_txt_path}...")
 
     # Read trees.txt (skip first 5 lines, tab-separated, column 8 contains tree)
     csv_data = pd.read_table(trees_txt_path, skiprows=5, sep='\t', header=None)
@@ -1428,7 +1440,7 @@ def generate_numpy_data(simulation_dir, verbose=False, logger=None):
         tree_dict[file_names[i]] = topologies[i]
 
     if verbose:
-        print(f"Processing FASTA files from {fasta_data_dir}...")
+        _print_stderr(f"Processing FASTA files from {fasta_data_dir}...")
 
     # Process all FASTA files
     file_list = [f for f in fasta_data_dir.iterdir() if f.is_file() and '.fas' in f.name and 'TRUE' in f.name]
@@ -1442,7 +1454,7 @@ def generate_numpy_data(simulation_dir, verbose=False, logger=None):
         file_base = fasta_file.stem.replace('_TRUE', '')
         if file_base not in tree_dict:
             if verbose:
-                print(f"Warning: No tree found for {file_base}, skipping...")
+                _print_stderr(f"Warning: No tree found for {file_base}, skipping...")
             continue
 
         try:
@@ -1458,14 +1470,14 @@ def generate_numpy_data(simulation_dir, verbose=False, logger=None):
             np.save(label_file, current_label)
 
             if verbose:
-                print(f'[{current_label}] {current_seq.shape}')
+                _print_stderr(f'[{current_label}] {current_seq.shape}')
         except Exception as e:
             if verbose:
-                print(f"Error processing {fasta_file.name}: {e}")
+                _print_stderr(f"Error processing {fasta_file.name}: {e}")
             continue
 
     if verbose:
-        print(f"Numpy data generation completed. Results in {numpy_data_dir}")
+        _print_stderr(f"Numpy data generation completed. Results in {numpy_data_dir}")
 
 
 class SimulationLogger:
@@ -1505,7 +1517,7 @@ class SimulationLogger:
         self.log_file.write(log_message)
         self.log_file.flush()
         if self.verbose:
-            print(message)
+            _print_stderr(message)
 
     def log_both(self, message, timestamp=True):
         """Write message to both screen and log file."""
@@ -1517,7 +1529,7 @@ class SimulationLogger:
         self.log_file.write(log_message)
         self.log_file.flush()
         if self.verbose:
-            print(message)
+            _print_stderr(message)
 
     def close(self):
         """Close log file."""
@@ -1834,9 +1846,9 @@ def _generate_simulation_metadata(simulation_dir, num_of_topology, taxa_num, ran
         logger.log_detail(f"  - {json_file}")
         logger.log_detail(f"  - {summary_file}")
     elif verbose:
-        print(f"Metadata files generated:")
-        print(f"  - {json_file}")
-        print(f"  - {summary_file}")
+        _print_stderr(f"Metadata files generated:")
+        _print_stderr(f"  - {json_file}")
+        _print_stderr(f"  - {summary_file}")
 
 
 def run_full_simulation(simulation_dir, num_of_topology, taxa_num, range_of_taxa_num,
@@ -2152,7 +2164,7 @@ def evaluate_simulation_results(fasta_dir, trees_file, output_dir=None,
     """
     # Read true trees
     if verbose:
-        print("Reading true trees...")
+        _print_stderr("Reading true trees...")
     true_trees = read_true_trees(trees_file)
 
     # Get all FASTA files
@@ -2164,7 +2176,7 @@ def evaluate_simulation_results(fasta_dir, trees_file, output_dir=None,
         raise ValueError(f"No FASTA files found in {fasta_dir}")
 
     if verbose:
-        print(f"Found {len(fasta_files)} FASTA files to process...")
+        _print_stderr(f"Found {len(fasta_files)} FASTA files to process...")
 
     # Create output directory if needed
     if output_dir is not None:
@@ -2179,7 +2191,7 @@ def evaluate_simulation_results(fasta_dir, trees_file, output_dir=None,
     # Process each FASTA file
     for i, fasta_file in enumerate(fasta_files):
         if verbose and (i + 1) % 10 == 0:
-            print(f"Processing {i + 1}/{len(fasta_files)}...")
+            _print_stderr(f"Processing {i + 1}/{len(fasta_files)}...")
 
         # Get file name (without extension)
         file_name = Path(fasta_file).stem.replace('_TRUE', '')
@@ -2187,7 +2199,7 @@ def evaluate_simulation_results(fasta_dir, trees_file, output_dir=None,
         # Get true tree
         if file_name not in true_trees:
             if verbose:
-                print(f"Warning: No true tree found for {file_name}, skipping...")
+                _print_stderr(f"Warning: No true tree found for {file_name}, skipping...")
             continue
 
         true_tree_str = true_trees[file_name]
@@ -2226,7 +2238,7 @@ def evaluate_simulation_results(fasta_dir, trees_file, output_dir=None,
 
         except Exception as e:
             if verbose:
-                print(f"Error processing {file_name}: {str(e)}")
+                _print_stderr(f"Error processing {file_name}: {str(e)}")
             results.append({
                 'file_name': file_name,
                 'rf_distance': None,
@@ -2349,7 +2361,7 @@ def load_training_data(numpy_seq_dir, numpy_label_dir, train_ratio=0.8, val_rati
         raise ValueError(f"Mismatch: {len(seq_files)} sequence files but {len(label_files)} label files")
 
     if verbose:
-        print(f"Loading {len(seq_files)} data files...")
+        _print_stderr(f"Loading {len(seq_files)} data files...")
 
     # Load all data
     X_all = []
@@ -2404,9 +2416,9 @@ def load_training_data(numpy_seq_dir, numpy_label_dir, train_ratio=0.8, val_rati
     y_test = y_all[n_train + n_val:]
 
     if verbose:
-        print(f"Training set: {len(X_train)} samples")
-        print(f"Validation set: {len(X_val)} samples")
-        print(f"Test set: {len(X_test)} samples")
+        _print_stderr(f"Training set: {len(X_train)} samples")
+        _print_stderr(f"Validation set: {len(X_val)} samples")
+        _print_stderr(f"Test set: {len(X_test)} samples")
 
     return (X_train, y_train), (X_val, y_val), (X_test, y_test)
 
@@ -2454,7 +2466,7 @@ def train_model(model, X_train, y_train, X_val, y_val, epochs=50, batch_size=32,
         model_path.parent.mkdir(parents=True, exist_ok=True)
         model.save_weights(str(model_path))
         if verbose >= 1:
-            print(f"Model saved to {model_save_path}")
+            _print_stderr(f"Model saved to {model_save_path}")
 
     return history
 
@@ -2504,7 +2516,7 @@ def train_fusang_model(numpy_seq_dir, numpy_label_dir, window_size=240, epochs=5
     # Evaluate on test set
     if verbose >= 1:
         test_loss, test_acc = model.evaluate(X_test, y_test, verbose=0)
-        print(f"Test accuracy: {test_acc:.4f}")
+        _print_stderr(f"Test accuracy: {test_acc:.4f}")
 
     return model, history
 
@@ -2763,13 +2775,13 @@ For detailed help on a subcommand, use: fusang <subcommand> --help
             )
 
             if verbose:
-                print(f"\nSimulation completed. Data saved to:")
-                print(f"  Sequences: {result['numpy_seq_dir']}")
-                print(f"  Labels: {result['numpy_label_dir']}")
-                print(f"  FASTA: {result['fasta_dir']}")
+                _print_stderr(f"\nSimulation completed. Data saved to:")
+                _print_stderr(f"  Sequences: {result['numpy_seq_dir']}")
+                _print_stderr(f"  Labels: {result['numpy_label_dir']}")
+                _print_stderr(f"  FASTA: {result['fasta_dir']}")
                 if 'evaluation' in result:
                     stats = result['evaluation']['statistics']
-                    print(f"\nEvaluation results saved to: {eval_output_dir}")
+                    _print_stderr(f"\nEvaluation results saved to: {eval_output_dir}")
 
         elif args.mode == 'evaluate':
             # Evaluation mode (standalone)
@@ -2785,14 +2797,14 @@ For detailed help on a subcommand, use: fusang <subcommand> --help
 
             if verbose:
                 stats = evaluation_results['statistics']
-                print(f"\nEvaluation Results:")
-                print(f"  Total files: {stats['total_files']}")
-                print(f"  Successful: {stats['successful_inferences']}")
-                print(f"  Failed: {stats['failed_inferences']}")
+                _print_stderr(f"\nEvaluation Results:")
+                _print_stderr(f"  Total files: {stats['total_files']}")
+                _print_stderr(f"  Successful: {stats['successful_inferences']}")
+                _print_stderr(f"  Failed: {stats['failed_inferences']}")
                 if stats['successful_inferences'] > 0:
-                    print(f"  Mean RF distance: {stats['mean_rf_distance']:.4f} ± {stats['std_rf_distance']:.4f}")
-                    print(f"  Mean normalized RF: {stats['mean_normalized_rf']:.4f} ± {stats['std_normalized_rf']:.4f}")
-                print(f"\nResults saved to: {output_dir}")
+                    _print_stderr(f"  Mean RF distance: {stats['mean_rf_distance']:.4f} ± {stats['std_rf_distance']:.4f}")
+                    _print_stderr(f"  Mean normalized RF: {stats['mean_normalized_rf']:.4f} ± {stats['std_normalized_rf']:.4f}")
+                _print_stderr(f"\nResults saved to: {output_dir}")
 
         elif hasattr(args, 'mode') and args.mode == 'train':
             # Training mode
@@ -2805,7 +2817,7 @@ For detailed help on a subcommand, use: fusang <subcommand> --help
             )
 
             if verbose:
-                print(f"\nTraining completed. Model saved to: {args.model_save_path}")
+                _print_stderr(f"\nTraining completed. Model saved to: {args.model_save_path}")
 
         else:
             # Inference mode (default, backward compatible)

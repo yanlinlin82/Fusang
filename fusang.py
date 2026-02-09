@@ -493,7 +493,7 @@ def _process_alignment(aln):
             header = line[1:].rstrip('\n').strip()
             fasta_dic[header] = []
         elif line[0].isalpha() or line[0] == '-':
-            processed_line = line[:].rstrip('\n').strip()
+            processed_line = line[:].rstrip('\n').strip().upper()
             for base, num in dic.items():
                 processed_line = processed_line.replace(base, num)
             line_list = [int(n) for n in list(processed_line)]

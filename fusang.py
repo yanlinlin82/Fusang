@@ -630,16 +630,16 @@ def fill_dl_predict(window_number, window_size, len_of_msa, comb_of_id, org_seq,
         start_idx += step
 
 
-def parse_msa_file(msa_dir):
+def parse_msa_file(msa_file):
     """Parse MSA file and return alignment data and taxa names."""
     support_format = ['.fas', '.phy', '.fasta', '.phylip']
     bio_format = ['fasta', 'phylip', 'fasta', 'phylip']
 
     taxa_name = {}
     for i in range(len(support_format)):
-        if msa_dir.endswith(support_format[i]):
+        if msa_file.endswith(support_format[i]):
             try:
-                with open(msa_dir, 'r') as f:
+                with open(msa_file, 'r') as f:
                     alignment = AlignIO.read(f, bio_format[i])
                 len_of_msa = len(alignment[0].seq)
                 taxa_num = len(alignment)
@@ -689,22 +689,17 @@ def initialize_quartet_data(taxa_num):
             dic_for_leave_node_comb_name, internal_node_name_pool)
 
 
-def write_output(searched_tree, output_path=None, save_prefix=None):
+def write_output(searched_tree, output_path=None):
     """Write output tree to file or stdout."""
-    if not searched_tree.endswith('\n'):
-        searched_tree += '\n'
-
     if output_path is not None:
         output_file = Path(output_path)
-    elif save_prefix is not None:
-        output_file = Path('./dl_output') / f'{save_prefix}.txt'
     else:
-        print(searched_tree, end='')
+        print(searched_tree)
         return
 
     output_file.parent.mkdir(parents=True, exist_ok=True)
     with open(output_file, 'a') as f:
-        f.write(searched_tree)
+        f.write(searched_tree + '\n')
 
 
 def load_dl_model(len_of_msa, sequence_type, branch_model):
@@ -2491,17 +2486,13 @@ def train_fusang_model(numpy_seq_dir, numpy_label_dir, window_size=240, epochs=5
 # ============================================================================
 
 def _add_inference_args(parser):
-    """Add inference arguments to a parser (shared between infer subcommand and legacy mode).
+    """Add inference arguments to a parser.
 
     Avoids using argument groups to prevent deprecation warnings in newer argparse versions.
     """
     # Add directly to parser (avoids deprecation warning with nested argument groups)
-    parser.add_argument("msa_file", nargs='?', type=str, metavar='MSA_FILE', help="Input MSA file (positional)")
-    parser.add_argument("output_file", nargs='?', type=str, metavar='OUTPUT_FILE', help="Output tree file in Newick format (positional, optional; if not specified, output to stdout)")
-    parser.add_argument("-i", "--input", dest="msa_dir", type=str, help="Input MSA file path")
-    parser.add_argument("-m", "--msa_dir", type=str, help=argparse.SUPPRESS)  # Hidden alias for backward compatibility
+    parser.add_argument("-i", "--input", dest="msa_file", type=str, required=True, metavar="MSA_FILE", help="Input MSA file path")
     parser.add_argument("-o", "--output", type=str, help="Output tree file path (Newick format)")
-    parser.add_argument("-s", "--save_prefix", type=str, help="Output file prefix (saved to ./dl_output/<prefix>.txt)")
     parser.add_argument("-b", "--beam_size", type=str, default='1', help="Beam search size (default: 1)")
     parser.add_argument("-t", "--sequence_type", type=str, default='standard', choices=['standard', 'coding', 'noncoding'], help="Sequence type for model selection (default: standard)")
     parser.add_argument("-r", "--branch_model", type=str, default='gamma', choices=['gamma', 'uniform'], help="Branch length model (default: gamma)")
@@ -2510,45 +2501,16 @@ def _add_inference_args(parser):
 
 def _extract_inference_args(args):
     """Extract inference parameters from args namespace."""
-    msa_file = getattr(args, 'msa_dir', None) or getattr(args, 'input', None) or getattr(args, 'msa_file', None)
-    output_path = getattr(args, 'output', None) or getattr(args, 'output_file', None)
-    save_prefix = getattr(args, 'save_prefix', None)
+    msa_file = getattr(args, 'msa_file', None) or getattr(args, 'input', None)
+    output_path = getattr(args, 'output', None)
     beam_size = int(getattr(args, 'beam_size', '1'))
     sequence_type = getattr(args, 'sequence_type', 'standard')
     branch_model = getattr(args, 'branch_model', 'gamma')
     window_coverage = float(getattr(args, 'window_coverage', '1'))
-    return msa_file, output_path, save_prefix, beam_size, sequence_type, branch_model, window_coverage
-
-
-def _is_file_path(arg):
-    """Check if argument looks like a file path."""
-    if not arg or arg.startswith('-'):
-        return False
-    path = Path(arg)
-    return (path.exists() or '/' in arg or '\\' in arg or
-            arg.endswith(('.fas', '.fasta', '.fa', '.phy', '.phylip')))
+    return msa_file, output_path, beam_size, sequence_type, branch_model, window_coverage
 
 
 if __name__ == '__main__':
-    # Determine if first argument is a subcommand or a file path
-    first_arg = sys.argv[1] if len(sys.argv) > 1 else None
-    has_subcommand = first_arg in ['simulate', 'train', 'infer', 'evaluate']
-    is_file_path = _is_file_path(first_arg) if first_arg else False
-    show_full_help = '-h' in sys.argv or '--help' in sys.argv
-
-    def print_simplified_help():
-        print("Fusang: Deep learning-based phylogenetic tree inference")
-        print("\nusage: fusang [-h] <subcommand> ...\n")
-        print("Subcommands:")
-        print("  infer      Infer phylogenetic tree from MSA")
-        print("  simulate   Generate simulation data for training")
-        print("  train      Train a Fusang model")
-        print("  evaluate   Evaluate inference results on simulated data")
-        print("\nLegacy mode (backward compatible):")
-        print("  fusang input.fasta [output.tree]")
-        print("  (if output.tree is not specified, output goes to stdout)")
-        print("\nUse 'fusang --help' for detailed help, or 'fusang <subcommand> --help' for subcommand help.")
-
     parser = argparse.ArgumentParser(
         'fusang',
         description='Fusang: Deep learning-based phylogenetic tree inference',
@@ -2557,9 +2519,6 @@ if __name__ == '__main__':
 Examples:
   # Infer phylogenetic tree (using subcommand):
   fusang infer -i input.fasta -o output.tree
-
-  # Infer phylogenetic tree (legacy mode, backward compatible):
-  fusang input.fasta output.tree
 
   # Generate simulation data:
   fusang simulate --simulation_dir ./simulation --num_of_topology 20 --taxa_num 5 ...
@@ -2578,11 +2537,9 @@ For detailed help on a subcommand, use: fusang <subcommand> --help
     parser.add_argument("-q", "--quiet", action="store_true", help="Suppress warning messages")
     parser.add_argument("-v", "--verbose", action="store_true", help="Show verbose output including stderr messages")
 
-    # Always create subparsers to show them in help (but not required for backward compatibility)
+    # Always create subparsers to show them in help
     subparsers = parser.add_subparsers(dest='mode', help='Operation mode', metavar='{infer,simulate,train,evaluate}')
-    # If first argument looks like a file path, make subcommand optional
-    if is_file_path:
-        subparsers.required = False
+    subparsers.required = True
 
     # Inference mode
     infer_parser = subparsers.add_parser(
@@ -2624,21 +2581,6 @@ For detailed help on a subcommand, use: fusang <subcommand> --help
     sim_parser.add_argument("--beam_size", type=int, default=1, help="Beam search size for inference (default: 1)")
     sim_parser.add_argument("--window_coverage", type=float, default=1.0, help="Sliding window coverage factor for inference (default: 1.0)")
 
-    # Evaluation mode (standalone)
-    eval_parser = subparsers.add_parser(
-        'evaluate',
-        help='Evaluate inference results on simulated data',
-        description='Evaluate inference accuracy by comparing predicted trees with true trees using RF distance.',
-        formatter_class=argparse.RawDescriptionHelpFormatter
-    )
-    eval_parser.add_argument("--fasta_dir", type=str, required=True, help="Directory containing FASTA files")
-    eval_parser.add_argument("--trees_file", type=str, required=True, help="Path to trees.txt file with true trees")
-    eval_parser.add_argument("--output_dir", type=str, default=None, help="Directory to save evaluation results (default: current directory)")
-    eval_parser.add_argument("--sequence_type", type=str, default='standard', help="Sequence type for inference: standard (default), coding, or noncoding")
-    eval_parser.add_argument("--branch_model", type=str, default='gamma', help="Branch length model for inference: gamma (default) or uniform")
-    eval_parser.add_argument("--beam_size", type=int, default=1, help="Beam search size for inference (default: 1)")
-    eval_parser.add_argument("--window_coverage", type=float, default=1.0, help="Sliding window coverage factor for inference (default: 1.0)")
-
     # Training mode
     train_parser = subparsers.add_parser(
         'train',
@@ -2656,39 +2598,23 @@ For detailed help on a subcommand, use: fusang <subcommand> --help
     train_parser.add_argument("--val_ratio", type=float, default=0.1, help="Ratio of data for validation (default: 0.1)")
     train_parser.add_argument("--model_save_path", type=str, required=True, help="Path to save trained model weights (.h5 file)")
 
-    # Backward compatibility: add inference arguments to main parser for old-style usage
-    if not has_subcommand:
-        # Add directly to parser to avoid deprecation warnings
-        _add_inference_args(parser)
+    # Evaluation mode
+    eval_parser = subparsers.add_parser(
+        'evaluate',
+        help='Evaluate inference results on simulated data',
+        description='Evaluate inference accuracy by comparing predicted trees with true trees using RF distance.',
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    eval_parser.add_argument("--fasta_dir", type=str, required=True, help="Directory containing FASTA files")
+    eval_parser.add_argument("--trees_file", type=str, required=True, help="Path to trees.txt file with true trees")
+    eval_parser.add_argument("--output_dir", type=str, default=None, help="Directory to save evaluation results (default: current directory)")
+    eval_parser.add_argument("--sequence_type", type=str, default='standard', help="Sequence type for inference: standard (default), coding, or noncoding")
+    eval_parser.add_argument("--branch_model", type=str, default='gamma', help="Branch length model for inference: gamma (default) or uniform")
+    eval_parser.add_argument("--beam_size", type=int, default=1, help="Beam search size for inference (default: 1)")
+    eval_parser.add_argument("--window_coverage", type=float, default=1.0, help="Sliding window coverage factor for inference (default: 1.0)")
 
     # Parse arguments
-    # If first argument is a file path, handle as legacy mode directly (before argparse tries to parse it)
-    if is_file_path:
-        # Create args namespace for legacy mode without parsing
-        args = argparse.Namespace()
-        args.mode = None
-        args.msa_dir = None
-        args.input = None
-        args.msa_file = sys.argv[1]
-        args.output = None
-        args.output_file = sys.argv[2] if len(sys.argv) > 2 and not sys.argv[2].startswith('-') else None
-        args.save_prefix = None
-        args.beam_size = '1'
-        args.sequence_type = 'standard'
-        args.branch_model = 'gamma'
-        args.window_coverage = '1'
-        args.quiet = '-q' in sys.argv or '--quiet' in sys.argv
-        args.verbose = '-v' in sys.argv or '--verbose' in sys.argv
-    else:
-        try:
-            args = parser.parse_args()
-        except SystemExit as e:
-            if show_full_help:
-                sys.exit(0)
-            if e.code != 0 and not has_subcommand:
-                print_simplified_help()
-                sys.exit(2)
-            sys.exit(e.code if e.code else 2)
+    args = parser.parse_args()
 
     # Validate that quiet and verbose are not both specified
     if hasattr(args, 'quiet') and hasattr(args, 'verbose') and args.quiet and args.verbose:
@@ -2699,19 +2625,6 @@ For detailed help on a subcommand, use: fusang <subcommand> --help
 
     # Use 'with' statement to ensure stderr is properly restored
     with _stderr_redirector:
-        # Handle backward compatibility: if no mode but positional args exist
-        if args.mode is None:
-            if is_file_path or (len(sys.argv) > 1 and not sys.argv[1].startswith('-') and sys.argv[1] not in ['simulate', 'train', 'infer', 'evaluate']):
-                # Legacy mode: ensure mode is set
-                args.mode = 'infer'
-            else:
-                # No args: show help
-                if show_full_help:
-                    parser.print_help()
-                else:
-                    print_simplified_help()
-                sys.exit(0)
-
         # Handle different modes
         if args.mode == 'simulate':
             # Simulation mode
@@ -2771,7 +2684,7 @@ For detailed help on a subcommand, use: fusang <subcommand> --help
                     _print_stderr(f"  Mean normalized RF: {stats['mean_normalized_rf']:.4f} ± {stats['std_normalized_rf']:.4f}")
                 _print_stderr(f"\nResults saved to: {output_dir}")
 
-        elif hasattr(args, 'mode') and args.mode == 'train':
+        elif args.mode == 'train':
             # Training mode
             model, history = train_fusang_model(
                 args.numpy_seq_dir, args.numpy_label_dir,
@@ -2784,12 +2697,8 @@ For detailed help on a subcommand, use: fusang <subcommand> --help
             if verbose:
                 _print_stderr(f"\nTraining completed. Model saved to: {args.model_save_path}")
 
-        else:
-            # Inference mode (default, backward compatible)
-            msa_file, output_path, save_prefix, beam_size, sequence_type, branch_model, window_coverage = _extract_inference_args(args)
-
-            if not msa_file:
-                parser.error("MSA file must be provided either as positional argument or with -m/--msa_dir or -i/--input")
+        elif args.mode == 'infer':
+            msa_file, output_path, beam_size, sequence_type, branch_model, window_coverage = _extract_inference_args(args)
 
             # Use the unified inference function
             searched_tree = infer_tree_from_msa(
@@ -2798,4 +2707,6 @@ For detailed help on a subcommand, use: fusang <subcommand> --help
             )
 
             # Write output
-            write_output(searched_tree, output_path, save_prefix)
+            write_output(searched_tree, output_path)
+        else:
+            parser.error("Unknown mode. Use --help for available subcommands.")

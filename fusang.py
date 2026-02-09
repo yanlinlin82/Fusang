@@ -1,6 +1,7 @@
 import argparse
 import datetime
 import json
+import logging
 import math
 import multiprocessing
 import os
@@ -15,6 +16,7 @@ from io import StringIO
 from itertools import combinations
 from multiprocessing import Pool, cpu_count
 from pathlib import Path
+from contextlib import redirect_stdout
 
 import numpy as np
 import pandas as pd
@@ -135,12 +137,41 @@ else:
     os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # Suppress INFO and WARNING messages (default)
     warnings.filterwarnings('ignore', category=FutureWarning)
 
+
 # TensorFlow and Keras are imported lazily when needed (see _import_tensorflow function)
 
 
-def _print_stderr(message='', end='\n'):
-    """Write a status line to stderr without polluting stdout."""
-    print(message, end=end, flush=True, file=sys.stderr)
+logger = logging.getLogger('fusang')
+_stream_handler = None
+if not logger.handlers:
+    _stream_handler = logging.StreamHandler(sys.stderr)
+    _stream_handler.setFormatter(logging.Formatter('%(message)s'))
+    logger.addHandler(_stream_handler)
+else:
+    for handler in logger.handlers:
+        if isinstance(handler, logging.StreamHandler):
+            _stream_handler = handler
+            break
+
+logger.setLevel(logging.DEBUG)
+
+
+def _configure_logging(verbose=False, quiet=False):
+    global _stream_handler
+    if _stream_handler is None:
+        _stream_handler = logging.StreamHandler(sys.stderr)
+        _stream_handler.setFormatter(logging.Formatter('%(message)s'))
+        logger.addHandler(_stream_handler)
+
+    if quiet:
+        _stream_handler.setLevel(logging.WARNING)
+    elif verbose:
+        _stream_handler.setLevel(logging.DEBUG)
+    else:
+        _stream_handler.setLevel(logging.INFO)
+
+
+_configure_logging(verbose=_early_args.verbose, quiet=_early_args.quiet)
 
 
 # ============================================================================
@@ -196,7 +227,7 @@ def get_current_topology_id(quart_key, cluster_1, cluster_2):
     elif ans == {'0', '3'} or ans == {'1', '2'}:
         return 2
     else:
-        _print_stderr('Error of function get_current_topology_id, exit the program')
+        logger.error('Error of function get_current_topology_id, exit the program')
         sys.exit(1)
 
 
@@ -222,8 +253,7 @@ def judge_tree_score(tree, quart_distribution, new_addition_taxa, dic_for_leave_
         try:
             crt_tree.prune(list(quart))
         except Exception:
-            _print_stderr('Error of pruning 4 taxa from current tree, the current tree is:')
-            _print_stderr(str(crt_tree))
+            logger.error('Error of pruning 4 taxa from current tree, the current tree is:\n' + str(crt_tree))
             sys.exit(1)
 
         quart_key = "".join(sorted(list(quart)))
@@ -519,15 +549,15 @@ def _import_tensorflow():
     """Lazy import TensorFlow and Keras to avoid slow startup when not needed."""
     global tf, layers, models, optimizers
     if 'tf' not in globals():
-        _print_stderr("Initializing TensorFlow (this may take a moment)...")
+        logger.debug("Initializing TensorFlow (this may take a moment)...")
         import tensorflow as tf
-        _print_stderr("TensorFlow initialized. Importing Keras...")
+        logger.debug("TensorFlow initialized. Importing Keras...")
         from keras import layers, models, optimizers
         globals()['tf'] = tf
         globals()['layers'] = layers
         globals()['models'] = models
         globals()['optimizers'] = optimizers
-        _print_stderr("TensorFlow and Keras ready.", end='\n')
+        logger.debug("TensorFlow and Keras ready.")
     return tf, layers, models, optimizers
 
 
@@ -539,9 +569,9 @@ def get_dl_model(window_size):
     if window_size not in (WINDOW_SIZE_SHORT, WINDOW_SIZE_LONG):
         raise ValueError(f"Unsupported window size: {window_size}. Must be {WINDOW_SIZE_SHORT} or {WINDOW_SIZE_LONG}.")
 
-    _print_stderr("Importing TensorFlow...")
+    logger.debug("Importing TensorFlow...")
     _, layers, models, _ = _import_tensorflow()
-    _print_stderr(f"TensorFlow imported. Creating model architecture ({window_size})...")
+    logger.debug(f"TensorFlow imported. Creating model architecture ({window_size})...")
 
     conv_x = [4, 1, 1, 1, 1, 1, 1, 1]
     conv_y = [1, 2, 2, 2, 2, 2, 2, 2]
@@ -579,8 +609,9 @@ def get_dl_model(window_size):
 
 
 def fill_dl_predict_each_slide_window(len_idx_1, len_idx_2, window_size, comb_of_id, org_seq,
-                                      dl_model, dl_predict, verbose=0):
+                                      dl_model, dl_predict):
     """Process predictions for a single sliding window."""
+    predict_verbose = 1 if logger.isEnabledFor(logging.DEBUG) else 0
     iters = len(comb_of_id) // BATCH_SIZE
     for i in range(iters):
         batch_seq = np.zeros((BATCH_SIZE, 4, window_size))
@@ -591,7 +622,11 @@ def fill_dl_predict_each_slide_window(len_idx_1, len_idx_2, window_size, comb_of
 
         tf, _, _, _ = _import_tensorflow()
         test_seq = tf.expand_dims(batch_seq.astype(np.float32), axis=-1)
-        predicted = dl_model.predict(x=test_seq, verbose=verbose)
+        if predict_verbose:
+            with redirect_stdout(sys.stderr):
+                predicted = dl_model.predict(x=test_seq, verbose=predict_verbose)
+        else:
+            predicted = dl_model.predict(x=test_seq, verbose=predict_verbose)
 
         for j in range(BATCH_SIZE):
             dl_predict[i * BATCH_SIZE + j, :] += predicted[j, :]
@@ -607,14 +642,18 @@ def fill_dl_predict_each_slide_window(len_idx_1, len_idx_2, window_size, comb_of
 
         tf, _, _, _ = _import_tensorflow()
         test_seq = tf.expand_dims(batch_seq.astype(np.float32), axis=-1)
-        predicted = dl_model.predict(x=test_seq, verbose=verbose)
+        if predict_verbose:
+            with redirect_stdout(sys.stderr):
+                predicted = dl_model.predict(x=test_seq, verbose=predict_verbose)
+        else:
+            predicted = dl_model.predict(x=test_seq, verbose=predict_verbose)
 
         for j in range(last_batch_size):
             dl_predict[iters * BATCH_SIZE + j, :] += predicted[j, :]
 
 
 def fill_dl_predict(window_number, window_size, len_of_msa, comb_of_id, org_seq,
-                    dl_model, dl_predict, verbose=0):
+                    dl_model, dl_predict):
     """Fill predictions using sliding windows."""
     if len_of_msa > window_size:
         step = (len_of_msa - window_size) // window_number
@@ -626,7 +665,7 @@ def fill_dl_predict(window_number, window_size, len_of_msa, comb_of_id, org_seq,
     for i in range(window_number):
         end_idx = start_idx + window_size
         fill_dl_predict_each_slide_window(start_idx, end_idx, window_size, comb_of_id,
-                                         org_seq, dl_model, dl_predict, verbose=verbose)
+                                         org_seq, dl_model, dl_predict)
         start_idx += step
 
 
@@ -653,10 +692,10 @@ def parse_msa_file(msa_file):
                 save_alignment.seek(0)  # Reset to beginning for reading
                 return save_alignment, taxa_name, len_of_msa, taxa_num
             except Exception:
-                _print_stderr('Something wrong about your msa file, please check your msa file')
+                logger.error('Something wrong about your msa file, please check your msa file')
                 sys.exit(1)
 
-    _print_stderr('we do not support this format of msa')
+    logger.error('we do not support this format of msa')
     sys.exit(1)
 
 
@@ -885,7 +924,7 @@ def _gen_newick(args):
 def run_simulation_topology(simulation_dir, num_of_topology, taxa_num, range_of_taxa_num,
                            num_of_process, distribution_of_internal_branch_length,
                            distribution_of_external_branch_length, range_of_mean_pairwise_divergence,
-                           seed=42, verbose=False, logger=None):
+                           seed=42):
     """
     Generate phylogenetic tree topologies.
 
@@ -899,7 +938,6 @@ def run_simulation_topology(simulation_dir, num_of_topology, taxa_num, range_of_
     distribution_of_external_branch_length: Distribution parameters [type, param1, param2] (as string or list)
     range_of_mean_pairwise_divergence: Range [min, max] for mean pairwise divergence (as string or list)
     seed: Random seed for reproducibility (default: 42)
-    verbose: Whether to show verbose output
     """
     # Parse parameters
     if isinstance(range_of_taxa_num, str):
@@ -916,8 +954,7 @@ def run_simulation_topology(simulation_dir, num_of_topology, taxa_num, range_of_
     label_file_dir.mkdir(parents=True, exist_ok=True)
     output_newick = label_file_dir / 'newick.csv'
 
-    if verbose:
-        _print_stderr(f"Generating {num_of_topology} topologies...")
+    logger.debug(f"Generating {num_of_topology} topologies...")
 
     # Set up multiprocessing
     if num_of_process <= 0:
@@ -948,10 +985,7 @@ def run_simulation_topology(simulation_dir, num_of_topology, taxa_num, range_of_
     data = pd.DataFrame(dictionary)
     data.to_csv(output_newick, index=False)
 
-    if logger:
-        logger.log_detail(f"Generated {len(csv_list)} topologies and saved to '{output_newick}'.")
-    elif verbose:
-        _print_stderr(f"Generated {len(csv_list)} topologies and saved to '{output_newick}'.")
+    logger.debug(f"Generated {len(csv_list)} topologies and saved to '{output_newick}'.")
 
     return output_newick
 
@@ -1065,7 +1099,7 @@ def _write_control_file_and_run_indelible(args):
     try:
         subprocess.run([str(indelible_path), str(out_file)], cwd=str(batch_out_dir), check=True)
     except subprocess.CalledProcessError as e:
-        _print_stderr(f"Command failed with return code {e.returncode}")
+        logger.error(f"Command failed with return code {e.returncode}")
         raise
 
 
@@ -1111,7 +1145,7 @@ def _find_indelible_executable(simulation_dir=None, indelible_path=None):
 def run_simulation_sequence(simulation_dir, taxa_num, num_of_topology, num_of_process,
                            len_of_msa_lower_bound, len_of_msa_upper_bound,
                            range_of_indel_substitution_rate, max_indel_length,
-                           seed=42, indelible_path=None, batch_size=1000, verbose=False, logger=None):
+                           seed=42, indelible_path=None, batch_size=1000):
     """
     Generate sequences using INDELible. This generates INDELible control files and runs INDELible.
 
@@ -1126,7 +1160,6 @@ def run_simulation_sequence(simulation_dir, taxa_num, num_of_topology, num_of_pr
     max_indel_length: Maximum indel length
     seed: Random seed for reproducibility (default: 42)
     indelible_path: Path to INDELible executable (None to auto-detect)
-    verbose: Whether to show verbose output
     """
     # Find INDELible executable
     indelible_path = _find_indelible_executable(simulation_dir, indelible_path)
@@ -1149,10 +1182,7 @@ def run_simulation_sequence(simulation_dir, taxa_num, num_of_topology, num_of_pr
         indel_rate_range = range_of_indel_substitution_rate
     indel_rate_bounds = (indel_rate_range[0], indel_rate_range[1])
 
-    if logger:
-        logger.log_detail(f"Generating sequences for {num_of_topology} topologies...")
-    elif verbose:
-        _print_stderr(f"Generating sequences for {num_of_topology} topologies...")
+    logger.debug(f"Generating sequences for {num_of_topology} topologies...")
 
     # Set random seed
     np.random.seed(seed)
@@ -1215,19 +1245,13 @@ def run_simulation_sequence(simulation_dir, taxa_num, num_of_topology, num_of_pr
             tree_ids, partition_names, msa_lengths, simulate_data_dir, indelible_path
         ))
 
-    if logger:
-        logger.log_detail(f"Processing {len(batch_args)} batches with batch size {batch_size}...")
-    elif verbose:
-        _print_stderr(f"Processing {len(batch_args)} batches with batch size {batch_size}...")
+    logger.debug(f"Processing {len(batch_args)} batches with batch size {batch_size}...")
 
     with Pool(n_cores) as pool:
         pool.map(_write_control_file_and_run_indelible, batch_args)
 
     # Combine trees.txt files from all batches
-    if logger:
-        logger.log_detail("Combining trees.txt files from batches...")
-    elif verbose:
-        _print_stderr("Combining trees.txt files from batches...")
+    logger.debug("Combining trees.txt files from batches...")
 
     trees_txt_path = simulate_data_dir / 'trees.txt'
     if trees_txt_path.exists():
@@ -1252,8 +1276,7 @@ def run_simulation_sequence(simulation_dir, taxa_num, num_of_topology, num_of_pr
                         if len(lines) > 6:
                             outfile.writelines(lines[6:])
 
-    if verbose:
-        _print_stderr(f"Sequence generation completed. Results in {simulate_data_dir}")
+    logger.debug(f"Sequence generation completed. Results in {simulate_data_dir}")
 
 
 def _get_msa_length(msa_file):
@@ -1279,14 +1302,13 @@ def _extract_fasta_file(args):
         shutil.copy(file_path, dest_path)
 
 
-def extract_fasta_data(simulation_dir, max_length=None, verbose=False, logger=None):
+def extract_fasta_data(simulation_dir, max_length=None):
     """
     Extract FASTA data from simulation output.
 
     Parameters:
     simulation_dir: Path to simulation directory
     max_length: Maximum MSA length to keep (None for no limit, default: 1e10)
-    verbose: Whether to show verbose output
     """
     simulate_data_dir = Path(simulation_dir) / 'simulate_data'
     fasta_data_dir = Path(simulation_dir) / 'fasta_data'
@@ -1295,8 +1317,7 @@ def extract_fasta_data(simulation_dir, max_length=None, verbose=False, logger=No
     if max_length is None:
         max_length = 1e10
 
-    if verbose:
-        _print_stderr(f"Extracting FASTA files from {simulate_data_dir}...")
+    logger.debug(f"Extracting FASTA files from {simulate_data_dir}...")
 
     # Get all files in simulate_data directory (including batch subdirectories)
     file_list = []
@@ -1310,16 +1331,14 @@ def extract_fasta_data(simulation_dir, max_length=None, verbose=False, logger=No
                     # Copy from batch directory
                     file_list.append(str(subitem.relative_to(simulate_data_dir)))
 
-    if verbose:
-        _print_stderr(f"Found {len(file_list)} FASTA files to extract")
+    logger.debug(f"Found {len(file_list)} FASTA files to extract")
 
     # Extract files in parallel
     extract_args = [(fname, simulate_data_dir, fasta_data_dir, max_length) for fname in file_list]
     with Pool(8) as pool:
         pool.map(_extract_fasta_file, extract_args)
 
-    if verbose:
-        _print_stderr(f"FASTA extraction completed. Results in {fasta_data_dir}")
+    logger.debug(f"FASTA extraction completed. Results in {fasta_data_dir}")
 
 
 def _assign_label(tree_str):
@@ -1365,13 +1384,12 @@ def _get_numpy(fasta_file_path):
     return np.array(matrix_out)
 
 
-def generate_numpy_data(simulation_dir, verbose=False, logger=None):
+def generate_numpy_data(simulation_dir):
     """
     Generate numpy training data from FASTA files.
 
     Parameters:
     simulation_dir: Path to simulation directory
-    verbose: Whether to show verbose output
     """
     # Copy trees.txt if it exists
     trees_src = Path(simulation_dir) / 'simulate_data' / 'trees.txt'
@@ -1392,8 +1410,7 @@ def generate_numpy_data(simulation_dir, verbose=False, logger=None):
     if not trees_txt_path.exists():
         raise FileNotFoundError(f"Trees file not found: {trees_txt_path}")
 
-    if verbose:
-        _print_stderr(f"Reading trees from {trees_txt_path}...")
+    logger.debug(f"Reading trees from {trees_txt_path}...")
 
     # Read trees.txt (skip first 5 lines, tab-separated, column 8 contains tree)
     csv_data = pd.read_table(trees_txt_path, skiprows=5, sep='\t', header=None)
@@ -1403,8 +1420,7 @@ def generate_numpy_data(simulation_dir, verbose=False, logger=None):
     for i in range(len(file_names)):
         tree_dict[file_names[i]] = topologies[i]
 
-    if verbose:
-        _print_stderr(f"Processing FASTA files from {fasta_data_dir}...")
+    logger.debug(f"Processing FASTA files from {fasta_data_dir}...")
 
     # Process all FASTA files
     file_list = [f for f in fasta_data_dir.iterdir() if f.is_file() and '.fas' in f.name and 'TRUE' in f.name]
@@ -1417,8 +1433,7 @@ def generate_numpy_data(simulation_dir, verbose=False, logger=None):
         # Extract file ID (e.g., "sim1" from "sim1_TRUE.fas")
         file_base = fasta_file.stem.replace('_TRUE', '')
         if file_base not in tree_dict:
-            if verbose:
-                _print_stderr(f"Warning: No tree found for {file_base}, skipping...")
+            logger.debug(f"Warning: No tree found for {file_base}, skipping...")
             continue
 
         try:
@@ -1433,83 +1448,12 @@ def generate_numpy_data(simulation_dir, verbose=False, logger=None):
             np.save(seq_file, current_seq)
             np.save(label_file, current_label)
 
-            if verbose:
-                _print_stderr(f'[{current_label}] {current_seq.shape}')
+            logger.debug(f'[{current_label}] {current_seq.shape}')
         except Exception as e:
-            if verbose:
-                _print_stderr(f"Error processing {fasta_file.name}: {e}")
+            logger.error(f"Error processing {fasta_file.name}: {e}")
             continue
 
-    if verbose:
-        _print_stderr(f"Numpy data generation completed. Results in {numpy_data_dir}")
-
-
-class SimulationLogger:
-    """
-    Logger for simulation process that writes detailed logs to file
-    and shows summary on screen.
-    """
-    def __init__(self, log_file_path, verbose=True):
-        self.log_file_path = Path(log_file_path)
-        self.log_file_path.parent.mkdir(parents=True, exist_ok=True)
-        self.verbose = verbose
-        self.log_file = None
-        self._open_log_file()
-
-    def _open_log_file(self):
-        """Open log file for writing."""
-        self.log_file = open(self.log_file_path, 'w', encoding='utf-8')
-        self.log_file.write("=" * 80 + "\n")
-        self.log_file.write(f"Fusang Simulation Log\n")
-        self.log_file.write(f"Started at: {datetime.datetime.now().isoformat()}\n")
-        self.log_file.write("=" * 80 + "\n\n")
-        self.log_file.flush()
-
-    def log_detail(self, message, timestamp=True):
-        """Write detailed message to log file only."""
-        if timestamp:
-            timestamp_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            self.log_file.write(f"[{timestamp_str}] {message}\n")
-        else:
-            self.log_file.write(f"{message}\n")
-        self.log_file.flush()
-
-    def log_summary(self, message):
-        """Write summary message to both screen and log file."""
-        timestamp_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        log_message = f"[{timestamp_str}] {message}\n"
-        self.log_file.write(log_message)
-        self.log_file.flush()
-        if self.verbose:
-            _print_stderr(message)
-
-    def log_both(self, message, timestamp=True):
-        """Write message to both screen and log file."""
-        if timestamp:
-            timestamp_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            log_message = f"[{timestamp_str}] {message}\n"
-        else:
-            log_message = f"{message}\n"
-        self.log_file.write(log_message)
-        self.log_file.flush()
-        if self.verbose:
-            _print_stderr(message)
-
-    def close(self):
-        """Close log file."""
-        if self.log_file:
-            self.log_file.write("\n" + "=" * 80 + "\n")
-            self.log_file.write(f"Log ended at: {datetime.datetime.now().isoformat()}\n")
-            self.log_file.write("=" * 80 + "\n")
-            self.log_file.close()
-            self.log_file = None
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self.close()
-        return False
+    logger.debug(f"Numpy data generation completed. Results in {numpy_data_dir}")
 
 
 def _collect_simulation_statistics(simulation_dir):
@@ -1615,15 +1559,13 @@ def _generate_simulation_metadata(simulation_dir, num_of_topology, taxa_num, ran
                                  len_of_msa_upper_bound, len_of_msa_lower_bound, num_of_process,
                                  distribution_of_internal_branch_length, distribution_of_external_branch_length,
                                  range_of_mean_pairwise_divergence, range_of_indel_substitution_rate,
-                                 max_indel_length, max_length, seed, batch_size, indelible_path,
-                                 verbose=False, logger=None):
+                                 max_indel_length, max_length, seed, batch_size, indelible_path):
     """
     Generate metadata files (JSON and summary.txt) for simulation results.
 
     Parameters:
     simulation_dir: Path to simulation directory
     All other parameters: Simulation parameters
-    verbose: Whether to show verbose output
     """
     sim_path = Path(simulation_dir)
     sim_path.mkdir(parents=True, exist_ok=True)
@@ -1789,21 +1731,16 @@ def _generate_simulation_metadata(simulation_dir, num_of_topology, taxa_num, ran
         f.write("For detailed information, see simulation_metadata.json\n")
         f.write("=" * 80 + "\n")
 
-    if logger:
-        logger.log_detail(f"Metadata files generated:")
-        logger.log_detail(f"  - {json_file}")
-        logger.log_detail(f"  - {summary_file}")
-    elif verbose:
-        _print_stderr(f"Metadata files generated:")
-        _print_stderr(f"  - {json_file}")
-        _print_stderr(f"  - {summary_file}")
+    logger.debug("Metadata files generated:")
+    logger.debug(f"  - {json_file}")
+    logger.debug(f"  - {summary_file}")
 
 
 def run_full_simulation(simulation_dir, num_of_topology, taxa_num, range_of_taxa_num,
                        len_of_msa_upper_bound, len_of_msa_lower_bound, num_of_process,
                        distribution_of_internal_branch_length, distribution_of_external_branch_length,
                        range_of_mean_pairwise_divergence, range_of_indel_substitution_rate,
-                       max_indel_length, max_length=None, cleanup=True, verbose=False,
+                       max_indel_length, max_length=None, cleanup=True,
                        indelible_path=None, seed=42, batch_size=1000):
     """
     Run the complete simulation pipeline.
@@ -1823,123 +1760,115 @@ def run_full_simulation(simulation_dir, num_of_topology, taxa_num, range_of_taxa
     max_indel_length: Maximum indel length
     max_length: Maximum MSA length to keep (None for no limit)
     cleanup: Whether to remove simulate_data directory after completion
-    verbose: Whether to show verbose output
     """
     sim_path = Path(simulation_dir)
     sim_path.mkdir(parents=True, exist_ok=True)
 
-    # Initialize logger
-    log_file_path = sim_path / 'simulation.log'
-    logger = SimulationLogger(log_file_path, verbose=verbose)
-
     try:
-        logger.log_summary("=" * 80)
-        logger.log_summary("Starting Full Simulation Pipeline")
-        logger.log_summary("=" * 80)
-        logger.log_detail(f"Simulation directory: {sim_path}")
-        logger.log_detail(f"Parameters:")
-        logger.log_detail(f"  - Number of topologies: {num_of_topology}")
-        logger.log_detail(f"  - Taxa number: {taxa_num}")
-        logger.log_detail(f"  - Range of taxa: {range_of_taxa_num}")
-        logger.log_detail(f"  - MSA length range: {len_of_msa_lower_bound} - {len_of_msa_upper_bound} bp")
-        logger.log_detail(f"  - Number of processes: {num_of_process}")
-        logger.log_detail(f"  - Max indel length: {max_indel_length}")
-        logger.log_detail(f"  - Seed: {seed}")
-        logger.log_detail(f"  - Batch size: {batch_size}")
-        logger.log_detail(f"  - Internal branch distribution: {distribution_of_internal_branch_length}")
-        logger.log_detail(f"  - External branch distribution: {distribution_of_external_branch_length}")
-        logger.log_detail(f"  - Mean pairwise divergence range: {range_of_mean_pairwise_divergence}")
-        logger.log_detail(f"  - Indel substitution rate range: {range_of_indel_substitution_rate}")
+        logger.info("=" * 80)
+        logger.info("Starting Full Simulation Pipeline")
+        logger.info("=" * 80)
+        logger.debug(f"Simulation directory: {sim_path}")
+        logger.debug("Parameters:")
+        logger.debug(f"  - Number of topologies: {num_of_topology}")
+        logger.debug(f"  - Taxa number: {taxa_num}")
+        logger.debug(f"  - Range of taxa: {range_of_taxa_num}")
+        logger.debug(f"  - MSA length range: {len_of_msa_lower_bound} - {len_of_msa_upper_bound} bp")
+        logger.debug(f"  - Number of processes: {num_of_process}")
+        logger.debug(f"  - Max indel length: {max_indel_length}")
+        logger.debug(f"  - Seed: {seed}")
+        logger.debug(f"  - Batch size: {batch_size}")
+        logger.debug(f"  - Internal branch distribution: {distribution_of_internal_branch_length}")
+        logger.debug(f"  - External branch distribution: {distribution_of_external_branch_length}")
+        logger.debug(f"  - Mean pairwise divergence range: {range_of_mean_pairwise_divergence}")
+        logger.debug(f"  - Indel substitution rate range: {range_of_indel_substitution_rate}")
         if max_length:
-            logger.log_detail(f"  - Max MSA length filter: {max_length} bp")
-        logger.log_detail("")
+            logger.debug(f"  - Max MSA length filter: {max_length} bp")
+        logger.debug("")
 
         # Step 1: Generate topologies
-        logger.log_summary("Step 1/6: Generating topologies...")
-        logger.log_detail(f"Generating {num_of_topology} topologies with {num_of_process} processes")
+        logger.info("Step 1/6: Generating topologies...")
+        logger.debug(f"Generating {num_of_topology} topologies with {num_of_process} processes")
         run_simulation_topology(
             simulation_dir, num_of_topology, taxa_num, range_of_taxa_num,
             num_of_process, distribution_of_internal_branch_length,
             distribution_of_external_branch_length, range_of_mean_pairwise_divergence,
-            seed=seed, verbose=False, logger=logger
+            seed=seed
         )
-        logger.log_summary("  ✓ Topology generation completed")
+        logger.info("  ✓ Topology generation completed")
 
         # Step 2: Generate sequences using INDELible
-        logger.log_summary("Step 2/6: Generating sequences with INDELible...")
-        logger.log_detail(f"Generating sequences for {num_of_topology} topologies")
+        logger.info("Step 2/6: Generating sequences with INDELible...")
+        logger.debug(f"Generating sequences for {num_of_topology} topologies")
         run_simulation_sequence(
             simulation_dir, taxa_num, num_of_topology, num_of_process,
             len_of_msa_lower_bound, len_of_msa_upper_bound,
             range_of_indel_substitution_rate, max_indel_length,
-            seed=seed, indelible_path=indelible_path, batch_size=batch_size, verbose=False, logger=logger
+            seed=seed, indelible_path=indelible_path, batch_size=batch_size
         )
-        logger.log_summary("  ✓ Sequence generation completed")
+        logger.info("  ✓ Sequence generation completed")
 
         # Step 3: Copy trees.txt to label_file directory
-        logger.log_detail("Copying trees.txt to label_file directory...")
+        logger.debug("Copying trees.txt to label_file directory...")
         trees_src = Path(simulation_dir) / 'simulate_data' / 'trees.txt'
         trees_dest = Path(simulation_dir) / 'label_file' / 'trees.txt'
         if trees_src.exists():
             trees_dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy(trees_src, trees_dest)
-            logger.log_detail(f"Copied {trees_src} to {trees_dest}")
+            logger.debug(f"Copied {trees_src} to {trees_dest}")
 
         # Step 4: Extract FASTA data
-        logger.log_summary("Step 3/6: Extracting FASTA data...")
-        extract_fasta_data(simulation_dir, max_length=max_length, verbose=False, logger=logger)
-        logger.log_summary("  ✓ FASTA extraction completed")
+        logger.info("Step 3/6: Extracting FASTA data...")
+        extract_fasta_data(simulation_dir, max_length=max_length)
+        logger.info("  ✓ FASTA extraction completed")
 
         # Step 5: Generate numpy data
-        logger.log_summary("Step 4/6: Generating numpy training data...")
-        generate_numpy_data(simulation_dir, verbose=False, logger=logger)
-        logger.log_summary("  ✓ NumPy data generation completed")
+        logger.info("Step 4/6: Generating numpy training data...")
+        generate_numpy_data(simulation_dir)
+        logger.info("  ✓ NumPy data generation completed")
 
         # Step 5: Cleanup if requested
         if cleanup:
             simulate_data_dir = Path(simulation_dir) / 'simulate_data'
             if simulate_data_dir.exists():
-                logger.log_summary("Step 5/6: Cleaning up temporary files...")
-                logger.log_detail(f"Removing directory: {simulate_data_dir}")
+                logger.info("Step 5/6: Cleaning up temporary files...")
+                logger.debug(f"Removing directory: {simulate_data_dir}")
                 shutil.rmtree(simulate_data_dir)
-                logger.log_summary("  ✓ Cleanup completed")
+                logger.info("  ✓ Cleanup completed")
 
-        logger.log_summary("Step 6/6: Generating metadata files...")
+        logger.info("Step 6/6: Generating metadata files...")
         try:
             _generate_simulation_metadata(
                 simulation_dir, num_of_topology, taxa_num, range_of_taxa_num,
                 len_of_msa_upper_bound, len_of_msa_lower_bound, num_of_process,
                 distribution_of_internal_branch_length, distribution_of_external_branch_length,
                 range_of_mean_pairwise_divergence, range_of_indel_substitution_rate,
-                max_indel_length, max_length, seed, batch_size, indelible_path,
-                verbose=False, logger=logger
+                max_indel_length, max_length, seed, batch_size, indelible_path
             )
-            logger.log_summary("  ✓ Metadata files generated")
+            logger.info("  ✓ Metadata files generated")
         except Exception as e:
-            logger.log_summary(f"  ✗ Error generating metadata files: {e}")
-            logger.log_detail(f"Error details: {type(e).__name__}: {e}")
+            logger.info(f"  ✗ Error generating metadata files: {e}")
+            logger.debug(f"Error details: {type(e).__name__}: {e}")
             import traceback
-            logger.log_detail(traceback.format_exc())
+            logger.debug(traceback.format_exc())
             # Re-raise to ensure the error is visible
             raise
 
-        logger.log_summary("=" * 80)
-        logger.log_summary("Simulation pipeline completed successfully!")
-        logger.log_summary(f"Log file saved to: {log_file_path}")
-        logger.log_summary("=" * 80)
+        logger.info("=" * 80)
+        logger.info("Simulation pipeline completed successfully!")
+        logger.info("=" * 80)
 
         sim_path = Path(simulation_dir)
         result = {
             'numpy_seq_dir': str(sim_path / 'numpy_data' / 'seq'),
             'numpy_label_dir': str(sim_path / 'numpy_data' / 'label'),
             'fasta_dir': str(sim_path / 'fasta_data'),
-            'trees_file': str(sim_path / 'label_file' / 'trees.txt'),
-            'log_file': str(log_file_path)
+            'trees_file': str(sim_path / 'label_file' / 'trees.txt')
         }
 
         return result
     finally:
-        logger.close()
+        pass
 
 
 # ============================================================================
@@ -1948,7 +1877,7 @@ def run_full_simulation(simulation_dir, num_of_topology, taxa_num, range_of_taxa
 
 
 def infer_tree_from_msa(msa_file, sequence_type='standard', branch_model='gamma',
-                        beam_size=1, window_coverage=1, verbose=False):
+                        beam_size=1, window_coverage=1):
     """
     Infer phylogenetic tree from a single MSA file.
 
@@ -1958,8 +1887,6 @@ def infer_tree_from_msa(msa_file, sequence_type='standard', branch_model='gamma'
     branch_model: Branch length model for model selection
     beam_size: Beam search size
     window_coverage: Sliding window coverage factor
-    verbose: Whether to show verbose output
-
     Returns:
     Inferred tree in Newick format (string)
     """
@@ -1979,9 +1906,8 @@ def infer_tree_from_msa(msa_file, sequence_type='standard', branch_model='gamma'
 
     # Generate predictions
     dl_predict = np.zeros((len(comb_of_id), 3))
-    predict_verbose = 1 if verbose else 0
     fill_dl_predict(window_number, window_size, len_of_msa, comb_of_id, org_seq,
-                   dl_model, dl_predict, verbose=predict_verbose)
+                   dl_model, dl_predict)
     dl_predict /= window_number
 
     # Generate phylogenetic tree
@@ -2023,15 +1949,13 @@ def calculate_rf_distance(tree1_str, tree2_str, unrooted=True):
         return None, None, None
 
 
-def load_model_from_path(model_path, window_size=None, verbose=False):
+def load_model_from_path(model_path, window_size=None):
     """
     Load a model from a specified file path (read-only).
 
     Parameters:
     model_path: Path to the model .h5 file
     window_size: Window size (240 or 1200). If None, will be inferred from model path or data.
-    verbose: Whether to show verbose output
-
     Returns:
     (model, window_size): Loaded model and window size
     """
@@ -2039,10 +1963,7 @@ def load_model_from_path(model_path, window_size=None, verbose=False):
     if not model_path.exists():
         raise FileNotFoundError(f"Model file not found: {model_path}")
 
-    import sys
-
-    if verbose:
-        _print_stderr(f"Loading model from {model_path}...")
+    logger.debug(f"Loading model from {model_path}...")
 
     # Determine window size from model path or parameter
     if window_size is None:
@@ -2056,28 +1977,23 @@ def load_model_from_path(model_path, window_size=None, verbose=False):
             # Default to 240 if cannot determine
             window_size = WINDOW_SIZE_SHORT
 
-    if verbose:
-        _print_stderr(f"Creating model architecture (window size: {window_size})...")
+    logger.debug(f"Creating model architecture (window size: {window_size})...")
 
     # Create appropriate model architecture
     dl_model = get_dl_model(window_size)
-    if verbose:
-        _print_stderr("Model architecture created.")
+    logger.debug("Model architecture created.")
 
     # Load weights (read-only, no modification)
-    if verbose:
-        _print_stderr("Loading model weights...")
+    logger.debug("Loading model weights...")
     dl_model.load_weights(filepath=str(model_path))
 
-    if verbose:
-        _print_stderr("Model loaded successfully.")
+    logger.debug("Model loaded successfully.")
 
     return dl_model, window_size
 
 
 def evaluate_numpy_data(model_path, numpy_seq_dir, numpy_label_dir,
-                        window_size=None, batch_size=32, output_dir=None,
-                        verbose=False):
+                        window_size=None, batch_size=32, output_dir=None):
     """
     Evaluate model accuracy and performance on numpy sequence and label data.
 
@@ -2088,21 +2004,16 @@ def evaluate_numpy_data(model_path, numpy_seq_dir, numpy_label_dir,
     window_size: Window size (240 or 1200). If None, will be inferred from model path.
     batch_size: Batch size for prediction (default: 32)
     output_dir: Directory to save evaluation results (None to skip saving)
-    verbose: Whether to show verbose output
-
     Returns:
     Dictionary containing evaluation results with accuracy and performance metrics
     """
     import time
-    import sys
     from sklearn.metrics import accuracy_score, confusion_matrix, classification_report
 
     # Load model
-    if verbose:
-        _print_stderr(f"Loading model from {model_path}...")
-    dl_model, window_size = load_model_from_path(model_path, window_size, verbose=verbose)
-    if verbose:
-        _print_stderr(f"Model loaded. Window size: {window_size}")
+    logger.debug(f"Loading model from {model_path}...")
+    dl_model, window_size = load_model_from_path(model_path, window_size)
+    logger.debug(f"Model loaded. Window size: {window_size}")
 
     # Get all numpy files
     seq_dir = Path(numpy_seq_dir)
@@ -2116,12 +2027,9 @@ def evaluate_numpy_data(model_path, numpy_seq_dir, numpy_label_dir,
     if len(seq_files) == 0:
         raise ValueError(f"No numpy files found in {numpy_seq_dir}")
 
-    if verbose:
-        _print_stderr(f"Found {len(seq_files)} data files to process...")
+    logger.debug(f"Found {len(seq_files)} data files to process...")
 
-    if verbose:
-        # Process data in batches: load a batch, process it, then move to next batch
-        _print_stderr(f"Processing {len(seq_files)} files (loading and predicting in batches of {batch_size})...")
+    logger.debug(f"Processing {len(seq_files)} files (loading and predicting in batches of {batch_size})...")
 
     y_all = []
     y_pred_proba = []
@@ -2238,17 +2146,13 @@ def evaluate_numpy_data(model_path, numpy_seq_dir, numpy_label_dir,
         else:
             remaining_str = "calculating..."
 
-        if verbose:
-            _print_stderr(f"  Processed: {files_done}/{len(seq_files)} files ({percent}%) | "
-                  f"Accuracy: {current_accuracy:.4f} | "
-                  f"Loss: {loss:.4f} | "
-                  f"Speed: {samples_per_second:.1f} samples/s | "
-                  f"Elapsed: {elapsed_str} | "
-                  f"Remaining: ~{remaining_str} | "
-                  f"Batch {batch_idx + 1}/{n_batches}")
-
-    if verbose:
-        _print_stderr()  # New line after progress
+        logger.debug(f"  Processed: {files_done}/{len(seq_files)} files ({percent}%) | "
+                f"Accuracy: {current_accuracy:.4f} | "
+                f"Loss: {loss:.4f} | "
+                f"Speed: {samples_per_second:.1f} samples/s | "
+                f"Elapsed: {elapsed_str} | "
+                f"Remaining: ~{remaining_str} | "
+                f"Batch {batch_idx + 1}/{n_batches}")
 
     inference_time = time.time() - start_time
 
@@ -2257,15 +2161,11 @@ def evaluate_numpy_data(model_path, numpy_seq_dir, numpy_label_dir,
     y_pred_proba = np.vstack(y_pred_proba)  # Shape: (n_samples, 3)
     y_pred = np.argmax(y_pred_proba, axis=1)
 
-    if verbose:
-        # Show summary
-        _print_stderr(f"Processing completed: {len(y_all)} samples")
-        _print_stderr(f"Label distribution: Class 0: {label_counts[0]}, "
-            f"Class 1: {label_counts[1]}, "
-            f"Class 2: {label_counts[2]}")
-        _print_stderr()
-
-        _print_stderr("Calculating evaluation metrics...")
+    logger.debug(f"Processing completed: {len(y_all)} samples")
+    logger.debug(f"Label distribution: Class 0: {label_counts[0]}, "
+        f"Class 1: {label_counts[1]}, "
+        f"Class 2: {label_counts[2]}")
+    logger.debug("Calculating evaluation metrics...")
 
     # Calculate metrics
     accuracy = accuracy_score(y_all, y_pred)
@@ -2355,8 +2255,7 @@ def evaluate_numpy_data(model_path, numpy_seq_dir, numpy_label_dir,
                 confidence = y_pred_proba[i, pred_label]
                 f.write(f"{seq_file}\t{true_label}\t{pred_label}\t{confidence:.4f}\n")
 
-        if verbose:
-            _print_stderr(f"\nResults saved to: {output_dir}")
+        logger.debug(f"\nResults saved to: {output_dir}")
 
     return {
         'statistics': stats,
@@ -2547,7 +2446,7 @@ def NumpyDataGenerator(*args, **kwargs):
     return cls(*args, **kwargs)
 
 
-def get_training_file_lists(numpy_seq_dir, numpy_label_dir, train_ratio=0.8, val_ratio=0.1, test_ratio=0.1, verbose=False):
+def get_training_file_lists(numpy_seq_dir, numpy_label_dir, train_ratio=0.8, val_ratio=0.1, test_ratio=0.1):
     """
     Get file lists for training, validation, and test sets without loading data.
 
@@ -2557,8 +2456,6 @@ def get_training_file_lists(numpy_seq_dir, numpy_label_dir, train_ratio=0.8, val
     train_ratio: Ratio of data for training
     val_ratio: Ratio of data for validation
     test_ratio: Ratio of data for testing
-    verbose: Whether to show verbose output
-
     Returns:
     (train_file_pairs, val_file_pairs, test_file_pairs) where each is a list of (seq_path, label_path) tuples
     """
@@ -2574,8 +2471,7 @@ def get_training_file_lists(numpy_seq_dir, numpy_label_dir, train_ratio=0.8, val
     if len(seq_files) != len(label_files):
         raise ValueError(f"Mismatch: {len(seq_files)} sequence files but {len(label_files)} label files")
 
-    if verbose:
-        _print_stderr(f"Found {len(seq_files)} data files...")
+    logger.debug(f"Found {len(seq_files)} data files...")
 
     # Create file pairs
     file_pairs = []
@@ -2596,15 +2492,14 @@ def get_training_file_lists(numpy_seq_dir, numpy_label_dir, train_ratio=0.8, val
     val_file_pairs = file_pairs[n_train:n_train + n_val]
     test_file_pairs = file_pairs[n_train + n_val:]
 
-    if verbose:
-        _print_stderr(f"Training set: {len(train_file_pairs)} samples")
-        _print_stderr(f"Validation set: {len(val_file_pairs)} samples")
-        _print_stderr(f"Test set: {len(test_file_pairs)} samples")
+    logger.debug(f"Training set: {len(train_file_pairs)} samples")
+    logger.debug(f"Validation set: {len(val_file_pairs)} samples")
+    logger.debug(f"Test set: {len(test_file_pairs)} samples")
 
     return train_file_pairs, val_file_pairs, test_file_pairs
 
 
-def load_training_data(numpy_seq_dir, numpy_label_dir, train_ratio=0.8, val_ratio=0.1, test_ratio=0.1, verbose=False):
+def load_training_data(numpy_seq_dir, numpy_label_dir, train_ratio=0.8, val_ratio=0.1, test_ratio=0.1):
     """
     Load training data from numpy files.
 
@@ -2614,8 +2509,6 @@ def load_training_data(numpy_seq_dir, numpy_label_dir, train_ratio=0.8, val_rati
     train_ratio: Ratio of data for training
     val_ratio: Ratio of data for validation
     test_ratio: Ratio of data for testing
-    verbose: Whether to show verbose output
-
     Returns:
     (X_train, y_train), (X_val, y_val), (X_test, y_test)
     """
@@ -2631,8 +2524,7 @@ def load_training_data(numpy_seq_dir, numpy_label_dir, train_ratio=0.8, val_rati
     if len(seq_files) != len(label_files):
         raise ValueError(f"Mismatch: {len(seq_files)} sequence files but {len(label_files)} label files")
 
-    if verbose:
-        _print_stderr(f"Loading {len(seq_files)} data files...")
+    logger.debug(f"Loading {len(seq_files)} data files...")
 
     # Load all data
     X_all = []
@@ -2686,10 +2578,9 @@ def load_training_data(numpy_seq_dir, numpy_label_dir, train_ratio=0.8, val_rati
     X_test = X_all[n_train + n_val:]
     y_test = y_all[n_train + n_val:]
 
-    if verbose:
-        _print_stderr(f"Training set: {len(X_train)} samples")
-        _print_stderr(f"Validation set: {len(X_val)} samples")
-        _print_stderr(f"Test set: {len(X_test)} samples")
+    logger.debug(f"Training set: {len(X_train)} samples")
+    logger.debug(f"Validation set: {len(X_val)} samples")
+    logger.debug(f"Test set: {len(X_test)} samples")
 
     return (X_train, y_train), (X_val, y_val), (X_test, y_test)
 
@@ -2823,8 +2714,7 @@ def train_model(model, train_gen, val_gen=None, epochs=100, batch_size=32,
         tsv_path = model_path.parent / 'training_history.tsv'
         history_logger = _get_training_history_logger(str(tsv_path))
         callbacks.append(history_logger)
-        if verbose >= 1:
-            _print_stderr(f"Training history will be saved to {tsv_path}")
+        logger.debug(f"Training history will be saved to {tsv_path}")
 
         # Add ModelCheckpoint to save best model based on validation performance
         # This is always enabled when validation data is available
@@ -2841,8 +2731,7 @@ def train_model(model, train_gen, val_gen=None, epochs=100, batch_size=32,
                 verbose=1 if verbose >= 1 else 0
             )
             callbacks.append(checkpoint)
-            if verbose >= 1:
-                _print_stderr(f"Model checkpoint: saving best model to {checkpoint_path} (monitoring {monitor}, mode={mode})")
+            logger.debug(f"Model checkpoint: saving best model to {checkpoint_path} (monitoring {monitor}, mode={mode})")
 
         # Add EarlyStopping if patience is specified and validation data is available
         if patience is not None and validation_data is not None:
@@ -2856,8 +2745,7 @@ def train_model(model, train_gen, val_gen=None, epochs=100, batch_size=32,
                 verbose=1 if verbose >= 1 else 0
             )
             callbacks.append(early_stop)
-            if verbose >= 1:
-                _print_stderr(f"Early stopping: will stop if {monitor} doesn't improve for {patience} epochs (mode={mode})")
+            logger.debug(f"Early stopping: will stop if {monitor} doesn't improve for {patience} epochs (mode={mode})")
 
     # Train model
     # If using generators, don't pass batch_size (generator handles it)
@@ -2901,8 +2789,7 @@ def train_model(model, train_gen, val_gen=None, epochs=100, batch_size=32,
             else:
                 # Append .weights.h5
                 model_path = model_path.with_suffix('.weights.h5')
-            if verbose >= 1:
-                _print_stderr(f"Note: Model path adjusted to {model_path} (Keras requires .weights.h5 extension)")
+            logger.debug(f"Note: Model path adjusted to {model_path} (Keras requires .weights.h5 extension)")
         model_path.parent.mkdir(parents=True, exist_ok=True)
 
         # If validation data was used, load the best model weights
@@ -2911,17 +2798,14 @@ def train_model(model, train_gen, val_gen=None, epochs=100, batch_size=32,
             if checkpoint_path.exists():
                 # Load best model weights
                 model.load_weights(str(checkpoint_path))
-                if verbose >= 1:
-                    _print_stderr(f"Loaded best model weights (based on {monitor}) from {checkpoint_path}")
+                logger.debug(f"Loaded best model weights (based on {monitor}) from {checkpoint_path}")
             else:
                 # If no checkpoint was saved (shouldn't happen), use current weights
-                if verbose >= 1:
-                    _print_stderr(f"Warning: No checkpoint found, using final epoch weights")
+                logger.debug(f"Warning: No checkpoint found, using final epoch weights")
 
         # Save the model (which is now the best model if validation was used)
         model.save_weights(str(model_path))
-        if verbose >= 1:
-            _print_stderr(f"Model saved to {model_save_path}")
+        logger.debug(f"Model saved to {model_save_path}")
 
     return history
 
@@ -2981,17 +2865,15 @@ def train_fusang_model(numpy_seq_dir, numpy_label_dir, window_size=240, epochs=1
             # Enable memory growth to prevent TensorFlow from allocating all GPU memory at once
             for gpu in gpus:
                 tf.config.experimental.set_memory_growth(gpu, True)
-            if verbose >= 1:
-                _print_stderr(f"Configured {len(gpus)} GPU(s) with memory growth enabled")
+            logger.debug(f"Configured {len(gpus)} GPU(s) with memory growth enabled")
         except RuntimeError as e:
             # Memory growth must be set before GPUs have been initialized
-            if verbose >= 1:
-                _print_stderr(f"Warning: Could not set GPU memory growth: {e}")
+            logger.error(f"Warning: Could not set GPU memory growth: {e}")
 
     # Get file lists instead of loading all data
     train_file_pairs, val_file_pairs, test_file_pairs = get_training_file_lists(
         numpy_seq_dir, numpy_label_dir, train_ratio=train_ratio, val_ratio=val_ratio,
-        test_ratio=1.0 - train_ratio - val_ratio, verbose=verbose >= 1
+        test_ratio=1.0 - train_ratio - val_ratio
     )
 
     # Create data generators
@@ -3011,8 +2893,7 @@ def train_fusang_model(numpy_seq_dir, numpy_label_dir, window_size=240, epochs=1
             else:
                 # Append .weights.h5
                 normalized_path = model_path.with_suffix('.weights.h5')
-            if verbose >= 1:
-                _print_stderr(f"Note: Model path adjusted from {model_save_path} to {normalized_path} (Keras requires .weights.h5 extension)")
+            logger.debug(f"Note: Model path adjusted from {model_save_path} to {normalized_path} (Keras requires .weights.h5 extension)")
             model_save_path = str(normalized_path)
 
     # Create model based on window size
@@ -3025,20 +2906,16 @@ def train_fusang_model(numpy_seq_dir, numpy_label_dir, window_size=240, epochs=1
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         backup_path = model_path.parent / f"{model_path.stem}_{timestamp}{model_path.suffix}"
         shutil.copy2(model_save_path, backup_path)
-        if verbose >= 1:
-            _print_stderr(f"Existing model found at {model_save_path}")
-            _print_stderr(f"Backed up to {backup_path}")
-            _print_stderr(f"Loading existing model weights for continued training...")
+        logger.debug(f"Existing model found at {model_save_path}")
+        logger.debug(f"Backed up to {backup_path}")
+        logger.debug(f"Loading existing model weights for continued training...")
 
         # Load existing model weights
         try:
             model.load_weights(model_save_path)
-            if verbose >= 1:
-                _print_stderr(f"Successfully loaded model weights from {model_save_path}")
+            logger.debug(f"Successfully loaded model weights from {model_save_path}")
         except Exception as e:
-            if verbose >= 1:
-                _print_stderr(f"Warning: Failed to load model weights: {e}")
-                _print_stderr("Starting training from scratch...")
+            logger.error(f"Warning: Failed to load model weights: {e}")
 
     # Train model using generators
     history = train_model(
@@ -3049,9 +2926,8 @@ def train_fusang_model(numpy_seq_dir, numpy_label_dir, window_size=240, epochs=1
     )
 
     # Evaluate on test set
-    if verbose >= 1:
-        test_loss, test_acc = model.evaluate(test_gen, verbose=0)
-        _print_stderr(f"Test accuracy: {test_acc:.4f}")
+    test_loss, test_acc = model.evaluate(test_gen, verbose=0)
+    logger.debug(f"Test accuracy: {test_acc:.4f}, Test loss: {test_loss:.4f}")
 
     return model, history
 
@@ -3072,6 +2948,12 @@ def _add_inference_args(parser):
     parser.add_argument("-t", "--sequence_type", type=str, default='standard', choices=['standard', 'coding', 'noncoding'], help="Sequence type for model selection (default: standard)")
     parser.add_argument("-r", "--branch_model", type=str, default='gamma', choices=['gamma', 'uniform'], help="Branch length model (default: gamma)")
     parser.add_argument("-w", "--window_coverage", type=str, default='1', help="Sliding window coverage factor (default: 1)")
+
+
+def _add_verbosity_args(parser):
+    """Add verbosity arguments to a parser."""
+    parser.add_argument("-q", "--quiet", action="store_true", help="Suppress warning messages")
+    parser.add_argument("-v", "--verbose", action="store_true", help="Show verbose output including stderr messages")
 
 
 def _extract_inference_args(args):
@@ -3109,8 +2991,7 @@ For detailed help on a subcommand, use: fusang <subcommand> --help
     )
 
     # Global arguments
-    parser.add_argument("-q", "--quiet", action="store_true", help="Suppress warning messages")
-    parser.add_argument("-v", "--verbose", action="store_true", help="Show verbose output including stderr messages")
+    _add_verbosity_args(parser)
 
     # Always create subparsers to show them in help
     subparsers = parser.add_subparsers(dest='mode', help='Operation mode', metavar='{infer,simulate,train,evaluate}')
@@ -3123,6 +3004,7 @@ For detailed help on a subcommand, use: fusang <subcommand> --help
         description='Infer phylogenetic tree from multiple sequence alignment (MSA) using deep learning.',
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
+    _add_verbosity_args(infer_parser)
     _add_inference_args(infer_parser)
 
     # Simulation mode
@@ -3132,6 +3014,7 @@ For detailed help on a subcommand, use: fusang <subcommand> --help
         description='Generate simulated phylogenetic data for model training using INDELible.',
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
+    _add_verbosity_args(sim_parser)
     sim_parser.add_argument("-o", "--output", dest="simulation_dir", type=str, required=True, help="Path to simulation output directory")
     sim_parser.add_argument("-n", "--num_of_topology", type=int, required=True, help="Number of MSAs to simulate")
     sim_parser.add_argument("-t", "--taxa_num", type=int, required=True, help="Number of taxa in final tree")
@@ -3157,6 +3040,7 @@ For detailed help on a subcommand, use: fusang <subcommand> --help
         description='Train deep learning models for quartet topology prediction.',
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
+    _add_verbosity_args(train_parser)
     train_parser.add_argument("-d", "--data_dir", type=str, required=True, help="Data directory (numpy_data or simulation output dir). Automatically uses data_dir/seq and data_dir/label, or data_dir/numpy_data/seq and data_dir/numpy_data/label")
     train_parser.add_argument("-w", "--window_size", type=int, choices=[240, 1200], default=240, help="Window size for model (default: 240)")
     train_parser.add_argument("-e", "--epochs", type=int, default=100, help="Number of training epochs (default: 100)")
@@ -3179,6 +3063,7 @@ For detailed help on a subcommand, use: fusang <subcommand> --help
         description='Evaluate a trained model on numpy sequence/label data.',
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
+    _add_verbosity_args(eval_parser)
     eval_parser.add_argument("-m", "--model", dest="model_path", type=str, required=True, help="Path to model weights (.h5)")
     eval_parser.add_argument("-d", "--data_dir", type=str, required=True, help="Data directory (numpy_data or simulation output dir). Automatically uses data_dir/seq and data_dir/label, or data_dir/numpy_data/seq and data_dir/numpy_data/label")
     eval_parser.add_argument("-o", "--output", dest="output_dir", type=str, default=None, help="Directory to save evaluation results (default: do not save)")
@@ -3214,6 +3099,7 @@ For detailed help on a subcommand, use: fusang <subcommand> --help
 
     # Determine verbosity
     verbose = args.verbose and not args.quiet
+    _configure_logging(verbose=verbose, quiet=args.quiet)
 
     # Use 'with' statement to ensure stderr is properly restored
     with _stderr_redirector:
@@ -3232,17 +3118,16 @@ For detailed help on a subcommand, use: fusang <subcommand> --help
                 distribution_of_internal_branch_length, distribution_of_external_branch_length,
                 range_of_mean_pairwise_divergence, range_of_indel_substitution_rate,
                 args.max_indel_length, max_length=args.max_length, cleanup=not args.no_cleanup,
-                verbose=verbose, indelible_path=args.indelible_path,
+                indelible_path=args.indelible_path,
                 seed=args.seed, batch_size=args.batch_size
             )
 
-            if verbose:
-                _print_stderr(f"\nSimulation completed. Data saved to:")
-                _print_stderr(f"  Sequences: {result['numpy_seq_dir']}")
-                _print_stderr(f"  Labels: {result['numpy_label_dir']}")
-                _print_stderr(f"  FASTA: {result['fasta_dir']}")
-                if 'evaluation' in result:
-                    _print_stderr("\nEvaluation results saved (see evaluation directory in simulation output).")
+            logger.debug(f"\nSimulation completed. Data saved to:")
+            logger.debug(f"  Sequences: {result['numpy_seq_dir']}")
+            logger.debug(f"  Labels: {result['numpy_label_dir']}")
+            logger.debug(f"  FASTA: {result['fasta_dir']}")
+            if 'evaluation' in result:
+                logger.debug("\nEvaluation results saved (see evaluation directory in simulation output).")
 
         elif args.mode == 'evaluate':
             # Evaluation mode (standalone) - numpy data evaluation only
@@ -3251,34 +3136,35 @@ For detailed help on a subcommand, use: fusang <subcommand> --help
             evaluation_results = evaluate_numpy_data(
                 args.model_path, args.numpy_seq_dir, args.numpy_label_dir,
                 window_size=args.window_size, batch_size=args.batch_size,
-                output_dir=output_dir, verbose=verbose
+                output_dir=output_dir
             )
 
             stats = evaluation_results['statistics']
-            _print_stderr("\nEvaluation Results:")
-            _print_stderr(f"  Total samples: {stats['total_samples']}")
-            _print_stderr(f"  Accuracy: {stats['accuracy']:.4f}")
-            _print_stderr(f"  Window size: {stats['window_size']}")
-            _print_stderr(f"  Batch size: {stats['batch_size']}")
+            logger.info("\nEvaluation Results:")
+            logger.info(f"  Total samples: {stats['total_samples']}")
+            logger.info(f"  Accuracy: {stats['accuracy']:.4f}")
+            logger.info(f"  Window size: {stats['window_size']}")
+            logger.info(f"  Batch size: {stats['batch_size']}")
             if verbose and output_dir is not None:
-                _print_stderr(f"\nResults saved to: {output_dir}")
+                logger.info(f"\nResults saved to: {output_dir}")
 
         elif args.mode == 'train':
             # Training mode
             # Convert patience: 0 means disable early stopping (None)
             patience = None if args.patience == 0 else args.patience
 
+            train_verbose = 0 if args.quiet else 2 if verbose else 1
             model, history = train_fusang_model(
                 args.numpy_seq_dir, args.numpy_label_dir,
                 window_size=args.window_size, epochs=args.epochs,
                 batch_size=args.batch_size, learning_rate=args.learning_rate,
                 train_ratio=args.train_ratio, val_ratio=args.val_ratio,
-                model_save_path=args.model_save_path, verbose=2 if verbose else 1,
+                model_save_path=args.model_save_path, verbose=train_verbose,
                 monitor=args.monitor, patience=patience
             )
 
             if verbose:
-                _print_stderr(f"\nTraining completed. Model saved to: {args.model_save_path}")
+                logger.debug(f"\nTraining completed. Model saved to: {args.model_save_path}")
 
         elif args.mode == 'infer':
             msa_file, output_path, beam_size, sequence_type, branch_model, window_coverage = _extract_inference_args(args)
@@ -3286,7 +3172,7 @@ For detailed help on a subcommand, use: fusang <subcommand> --help
             # Use the unified inference function
             searched_tree = infer_tree_from_msa(
                 msa_file, sequence_type=sequence_type, branch_model=branch_model,
-                beam_size=beam_size, window_coverage=window_coverage, verbose=verbose
+                beam_size=beam_size, window_coverage=window_coverage
             )
 
             # Write output

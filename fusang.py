@@ -531,78 +531,46 @@ def _import_tensorflow():
     return tf, layers, models, optimizers
 
 
-def get_dl_model_1200():
+def get_dl_model(window_size):
     """
-    Get the definition of DL model for sequences longer than 1200.
-    This model aims to solve the default case for sequences with length larger than 1200.
+    Get the definition of DL model for the given window size.
+    Supported window sizes: 240 and 1200.
     """
+    if window_size not in (WINDOW_SIZE_SHORT, WINDOW_SIZE_LONG):
+        raise ValueError(f"Unsupported window size: {window_size}. Must be {WINDOW_SIZE_SHORT} or {WINDOW_SIZE_LONG}.")
+
     _print_stderr("Importing TensorFlow...")
     _, layers, models, _ = _import_tensorflow()
-    _print_stderr("TensorFlow imported. Creating model architecture (1200)...")
-    conv_x=[4,1,1,1,1,1,1,1]
-    conv_y=[1,2,2,2,2,2,2,2]
-    pool=[1,4,4,4,2,2,2,1]
-    filter_s=[1024,1024,128,128,128,128,128,128]
+    _print_stderr(f"TensorFlow imported. Creating model architecture ({window_size})...")
 
-    visible = layers.Input(shape=(4,1200,1))
+    conv_x = [4, 1, 1, 1, 1, 1, 1, 1]
+    conv_y = [1, 2, 2, 2, 2, 2, 2, 2]
+    filter_s = [1024, 1024, 128, 128, 128, 128, 128, 128]
+
+    if window_size == WINDOW_SIZE_SHORT:
+        pool = [1, 2, 2, 2, 2, 2, 2, 2]
+    else:
+        pool = [1, 4, 4, 4, 2, 2, 2, 1]
+
+    visible = layers.Input(shape=(4, window_size, 1))
     x = visible
 
-    for l in list(range(0,8)):
-        x = layers.ZeroPadding2D(padding=((0, 0), (0,conv_y[l]-1)))(x)
+    for l in range(8):
+        x = layers.ZeroPadding2D(padding=((0, 0), (0, conv_y[l] - 1)))(x)
         x = layers.Conv2D(filters=filter_s[l], kernel_size=(conv_x[l], conv_y[l]), strides=1, activation='relu')(x)
         x = layers.BatchNormalization()(x)
         x = layers.Dropout(rate=0.2)(x)
-        x = layers.AveragePooling2D(pool_size=(1,pool[l]))(x)
+        x = layers.AveragePooling2D(pool_size=(1, pool[l]))(x)
 
     flat = layers.Flatten()(x)
 
-    y = layers.Reshape((4,1200))(visible)
-    y = layers.Bidirectional(layers.LSTM(128,return_sequences=True))(y)
-    y = layers.Bidirectional(layers.LSTM(128,return_sequences=True))(y)
+    y = layers.Reshape((4, window_size))(visible)
+    y = layers.Bidirectional(layers.LSTM(128, return_sequences=True))(y)
+    y = layers.Bidirectional(layers.LSTM(128, return_sequences=True))(y)
     y = layers.Bidirectional(layers.LSTM(128))(y)
-    flat = layers.concatenate([flat, y],axis=-1)
+    flat = layers.concatenate([flat, y], axis=-1)
 
-    hidden1 = layers.Dense(1024,activation='relu')(flat)
-    drop1 = layers.Dropout(rate=0.2)(hidden1)
-    output = layers.Dense(3, activation='softmax')(drop1)
-    model = models.Model(inputs=visible, outputs=output)
-
-    return model
-
-
-def get_dl_model_240():
-    """
-    Get the definition of DL model for sequences up to 240.
-    This model aims to solve the short length case for sequences with length larger than 240.
-    """
-    _print_stderr("Importing TensorFlow...")
-    _, layers, models, _ = _import_tensorflow()
-    _print_stderr("TensorFlow imported. Creating model architecture (240)...")
-    conv_x=[4,1,1,1,1,1,1,1]
-    conv_y=[1,2,2,2,2,2,2,2]
-    pool=[1,2,2,2,2,2,2,2]
-    filter_s=[1024,1024,128,128,128,128,128,128]
-
-    visible = layers.Input(shape=(4,240,1))
-    x = visible
-
-    for l in list(range(0,8)):
-        x = layers.ZeroPadding2D(padding=((0, 0), (0,conv_y[l]-1)))(x)
-        x = layers.Conv2D(filters=filter_s[l], kernel_size=(conv_x[l], conv_y[l]), strides=1, activation='relu')(x)
-        x = layers.BatchNormalization()(x)
-        x = layers.Dropout(rate=0.2)(x)
-        x = layers.AveragePooling2D(pool_size=(1,pool[l]))(x)
-        #print(x.shape)
-
-    flat = layers.Flatten()(x)
-
-    y = layers.Reshape((4,240))(visible)
-    y = layers.Bidirectional(layers.LSTM(128,return_sequences=True))(y)
-    y = layers.Bidirectional(layers.LSTM(128,return_sequences=True))(y)
-    y = layers.Bidirectional(layers.LSTM(128))(y)
-    flat = layers.concatenate([flat, y],axis=-1)
-
-    hidden1 = layers.Dense(1024,activation='relu')(flat)
+    hidden1 = layers.Dense(1024, activation='relu')(flat)
     drop1 = layers.Dropout(rate=0.2)(hidden1)
     output = layers.Dense(3, activation='softmax')(drop1)
     model = models.Model(inputs=visible, outputs=output)
@@ -753,13 +721,13 @@ def load_dl_model(len_of_msa, sequence_type, branch_model):
 
     # Select model based on MSA length
     if len_of_msa <= MSA_LENGTH_THRESHOLD:
-        dl_model = get_dl_model_240()
         model_num = '1'
         window_size = WINDOW_SIZE_SHORT
     else:
-        dl_model = get_dl_model_1200()
         model_num = '2'
         window_size = WINDOW_SIZE_LONG
+
+    dl_model = get_dl_model(window_size)
 
     # Build and load model path: model/{S|C|N}{1|2}{G|U}.h5
     seq_prefix = seq_type_map.get(sequence_type, 'S')
@@ -2501,12 +2469,7 @@ def train_fusang_model(numpy_seq_dir, numpy_label_dir, window_size=240, epochs=5
     )
 
     # Create model based on window size
-    if window_size == 240:
-        model = get_dl_model_240()
-    elif window_size == 1200:
-        model = get_dl_model_1200()
-    else:
-        raise ValueError(f"Unsupported window size: {window_size}. Must be 240 or 1200.")
+    model = get_dl_model(window_size)
 
     # Train model
     history = train_model(

@@ -138,9 +138,9 @@ else:
 # TensorFlow and Keras are imported lazily when needed (see _import_tensorflow function)
 
 
-def _print_stderr(message, end='\n'):
+def _print_stderr(message='', end='\n'):
     """Write a status line to stderr without polluting stdout."""
-    print(message, flush=True, end=end, file=sys.stderr)
+    print(message, end=end, flush=True, file=sys.stderr)
 
 
 # ============================================================================
@@ -1130,9 +1130,8 @@ def run_simulation_sequence(simulation_dir, taxa_num, num_of_topology, num_of_pr
     """
     # Find INDELible executable
     indelible_path = _find_indelible_executable(simulation_dir, indelible_path)
-
-    # Make indelible executable
-    indelible_path.chmod(0o777)
+    if not indelible_path.is_executable():
+        raise PermissionError(f"INDELible found at {indelible_path} but is not executable. Please check permissions.")
 
     # Create simulate_data directory
     simulate_data_dir = Path(simulation_dir) / 'simulate_data'
@@ -1617,14 +1616,13 @@ def _generate_simulation_metadata(simulation_dir, num_of_topology, taxa_num, ran
                                  distribution_of_internal_branch_length, distribution_of_external_branch_length,
                                  range_of_mean_pairwise_divergence, range_of_indel_substitution_rate,
                                  max_indel_length, max_length, seed, batch_size, indelible_path,
-                                 evaluation_results=None, verbose=False, logger=None):
+                                 verbose=False, logger=None):
     """
     Generate metadata files (JSON and summary.txt) for simulation results.
 
     Parameters:
     simulation_dir: Path to simulation directory
     All other parameters: Simulation parameters
-    evaluation_results: Evaluation results if available
     verbose: Whether to show verbose output
     """
     sim_path = Path(simulation_dir)
@@ -1705,9 +1703,6 @@ def _generate_simulation_metadata(simulation_dir, num_of_topology, taxa_num, ran
         'statistics': convert_for_json(stats),
     }
 
-    if evaluation_results is not None:
-        metadata['evaluation'] = convert_for_json(evaluation_results)
-
     # Write JSON file
     json_file = sim_path / 'simulation_metadata.json'
     with open(json_file, 'w', encoding='utf-8') as f:
@@ -1777,10 +1772,9 @@ def _generate_simulation_metadata(simulation_dir, num_of_topology, taxa_num, ran
             f.write("\n")
             f.write(f"  Training Command Example:\n")
             f.write(f"    uv run fusang.py train \\\n")
-            f.write(f"      --numpy_seq_dir {sim_path}/numpy_data/seq \\\n")
-            f.write(f"      --numpy_label_dir {sim_path}/numpy_data/label \\\n")
-            f.write(f"      --window_size {'240' if len_of_msa_upper_bound <= 1210 else '1200'} \\\n")
-            f.write(f"      --model_save_path model/<MODEL_NAME>.h5\n")
+            f.write(f"      -d {sim_path} \\\n")
+            f.write(f"      -w {'240' if len_of_msa_upper_bound <= 1210 else '1200'} \\\n")
+            f.write(f"      -o model/<MODEL_NAME>.weights.h5\n")
         f.write("\n")
 
         f.write("System Information:\n")
@@ -1790,17 +1784,6 @@ def _generate_simulation_metadata(simulation_dir, num_of_topology, taxa_num, ran
         f.write(f"  Pandas Version: {system_info['pandas_version']}\n")
         f.write(f"  SciPy Version: {system_info['scipy_version']}\n")
         f.write("\n")
-
-        if evaluation_results is not None:
-            f.write("Evaluation Results:\n")
-            eval_stats = evaluation_results.get('statistics', {})
-            f.write(f"  Total Files Processed: {eval_stats.get('total_files', 0)}\n")
-            f.write(f"  Successful Inferences: {eval_stats.get('successful_inferences', 0)}\n")
-            f.write(f"  Failed Inferences: {eval_stats.get('failed_inferences', 0)}\n")
-            if eval_stats.get('successful_inferences', 0) > 0:
-                f.write(f"  Mean RF Distance: {eval_stats.get('mean_rf_distance', 0):.4f} ± {eval_stats.get('std_rf_distance', 0):.4f}\n")
-                f.write(f"  Mean Normalized RF: {eval_stats.get('mean_normalized_rf', 0):.4f} ± {eval_stats.get('std_normalized_rf', 0):.4f}\n")
-            f.write("\n")
 
         f.write("=" * 80 + "\n")
         f.write("For detailed information, see simulation_metadata.json\n")
@@ -1821,8 +1804,6 @@ def run_full_simulation(simulation_dir, num_of_topology, taxa_num, range_of_taxa
                        distribution_of_internal_branch_length, distribution_of_external_branch_length,
                        range_of_mean_pairwise_divergence, range_of_indel_substitution_rate,
                        max_indel_length, max_length=None, cleanup=True, verbose=False,
-                       run_inference=False, evaluate_results=False, output_dir=None,
-                       sequence_type='standard', branch_model='gamma', beam_size=1, window_coverage=1,
                        indelible_path=None, seed=42, batch_size=1000):
     """
     Run the complete simulation pipeline.
@@ -1874,7 +1855,7 @@ def run_full_simulation(simulation_dir, num_of_topology, taxa_num, range_of_taxa
         logger.log_detail("")
 
         # Step 1: Generate topologies
-        logger.log_summary("Step 1/7: Generating topologies...")
+        logger.log_summary("Step 1/6: Generating topologies...")
         logger.log_detail(f"Generating {num_of_topology} topologies with {num_of_process} processes")
         run_simulation_topology(
             simulation_dir, num_of_topology, taxa_num, range_of_taxa_num,
@@ -1885,7 +1866,7 @@ def run_full_simulation(simulation_dir, num_of_topology, taxa_num, range_of_taxa
         logger.log_summary("  ✓ Topology generation completed")
 
         # Step 2: Generate sequences using INDELible
-        logger.log_summary("Step 2/7: Generating sequences with INDELible...")
+        logger.log_summary("Step 2/6: Generating sequences with INDELible...")
         logger.log_detail(f"Generating sequences for {num_of_topology} topologies")
         run_simulation_sequence(
             simulation_dir, taxa_num, num_of_topology, num_of_process,
@@ -1905,63 +1886,25 @@ def run_full_simulation(simulation_dir, num_of_topology, taxa_num, range_of_taxa
             logger.log_detail(f"Copied {trees_src} to {trees_dest}")
 
         # Step 4: Extract FASTA data
-        logger.log_summary("Step 3/7: Extracting FASTA data...")
+        logger.log_summary("Step 3/6: Extracting FASTA data...")
         extract_fasta_data(simulation_dir, max_length=max_length, verbose=False, logger=logger)
         logger.log_summary("  ✓ FASTA extraction completed")
 
         # Step 5: Generate numpy data
-        logger.log_summary("Step 4/7: Generating numpy training data...")
+        logger.log_summary("Step 4/6: Generating numpy training data...")
         generate_numpy_data(simulation_dir, verbose=False, logger=logger)
         logger.log_summary("  ✓ NumPy data generation completed")
 
-        # Step 6: Run inference and evaluation if requested
-        evaluation_results = None
-        if run_inference or (evaluate_results is True):
-            logger.log_summary("Step 5/7: Running inference and evaluation...")
-
-            fasta_dir = Path(simulation_dir) / 'fasta_data'
-            trees_file = Path(simulation_dir) / 'label_file' / 'trees.txt'
-
-            if not trees_file.exists():
-                # Try to get from simulate_data if cleanup hasn't happened yet
-                trees_file_alt = Path(simulation_dir) / 'simulate_data' / 'trees.txt'
-                if trees_file_alt.exists():
-                    trees_file = trees_file_alt
-
-            if evaluate_results:
-                evaluation_results = evaluate_simulation_results(
-                    str(fasta_dir), str(trees_file), output_dir=output_dir,
-                    sequence_type=sequence_type, branch_model=branch_model,
-                    beam_size=beam_size, window_coverage=window_coverage, verbose=False, logger=logger
-                )
-
-                stats = evaluation_results['statistics']
-                logger.log_summary("  ✓ Evaluation completed")
-                logger.log_summary(f"    Total files: {stats['total_files']}")
-                logger.log_summary(f"    Successful: {stats['successful_inferences']}")
-                logger.log_summary(f"    Failed: {stats['failed_inferences']}")
-                if stats['successful_inferences'] > 0:
-                    logger.log_summary(f"    Mean RF distance: {stats['mean_rf_distance']:.4f} ± {stats['std_rf_distance']:.4f}")
-                    logger.log_summary(f"    Mean normalized RF: {stats['mean_normalized_rf']:.4f} ± {stats['std_normalized_rf']:.4f}")
-
-                logger.log_detail("Evaluation Results:")
-                logger.log_detail(f"  Total files: {stats['total_files']}")
-                logger.log_detail(f"  Successful: {stats['successful_inferences']}")
-                logger.log_detail(f"  Failed: {stats['failed_inferences']}")
-                if stats['successful_inferences'] > 0:
-                    logger.log_detail(f"  Mean RF distance: {stats['mean_rf_distance']:.4f} ± {stats['std_rf_distance']:.4f}")
-                    logger.log_detail(f"  Mean normalized RF: {stats['mean_normalized_rf']:.4f} ± {stats['std_normalized_rf']:.4f}")
-
-        # Step 7: Cleanup if requested
+        # Step 5: Cleanup if requested
         if cleanup:
             simulate_data_dir = Path(simulation_dir) / 'simulate_data'
             if simulate_data_dir.exists():
-                logger.log_summary("Step 6/7: Cleaning up temporary files...")
+                logger.log_summary("Step 5/6: Cleaning up temporary files...")
                 logger.log_detail(f"Removing directory: {simulate_data_dir}")
                 shutil.rmtree(simulate_data_dir)
                 logger.log_summary("  ✓ Cleanup completed")
 
-        logger.log_summary("Step 7/7: Generating metadata files...")
+        logger.log_summary("Step 6/6: Generating metadata files...")
         try:
             _generate_simulation_metadata(
                 simulation_dir, num_of_topology, taxa_num, range_of_taxa_num,
@@ -1969,7 +1912,7 @@ def run_full_simulation(simulation_dir, num_of_topology, taxa_num, range_of_taxa
                 distribution_of_internal_branch_length, distribution_of_external_branch_length,
                 range_of_mean_pairwise_divergence, range_of_indel_substitution_rate,
                 max_indel_length, max_length, seed, batch_size, indelible_path,
-                evaluation_results, verbose=False, logger=logger
+                verbose=False, logger=logger
             )
             logger.log_summary("  ✓ Metadata files generated")
         except Exception as e:
@@ -1994,42 +1937,14 @@ def run_full_simulation(simulation_dir, num_of_topology, taxa_num, range_of_taxa
             'log_file': str(log_file_path)
         }
 
-        if evaluation_results is not None:
-            result['evaluation'] = evaluation_results
-
         return result
     finally:
         logger.close()
 
 
 # ============================================================================
-# Inference and Evaluation Functions
+# Inference Functions
 # ============================================================================
-
-def read_true_trees(trees_file):
-    """
-    Read true trees from trees.txt file generated by INDELible.
-
-    Parameters:
-    trees_file: Path to trees.txt file
-
-    Returns:
-    Dictionary mapping file names to true tree Newick strings
-    """
-    trees_path = Path(trees_file)
-    if not trees_path.exists():
-        raise FileNotFoundError(f"Trees file not found: {trees_file}")
-
-    # Read trees.txt (skip first 5 lines, tab-separated, column 8 contains tree)
-    csv_data = pd.read_table(trees_path, skiprows=5, sep='\t', header=None)
-    file_names = list(csv_data[0])
-    true_trees = list(csv_data[8])
-
-    tree_dict = {}
-    for i in range(len(file_names)):
-        tree_dict[file_names[i]] = true_trees[i].strip()
-
-    return tree_dict
 
 
 def infer_tree_from_msa(msa_file, sequence_type='standard', branch_model='gamma',
@@ -2108,195 +2023,586 @@ def calculate_rf_distance(tree1_str, tree2_str, unrooted=True):
         return None, None, None
 
 
-def evaluate_simulation_results(fasta_dir, trees_file, output_dir=None,
-                                sequence_type='standard', branch_model='gamma',
-                                beam_size=1, window_coverage=1, verbose=False):
+def load_model_from_path(model_path, window_size=None, verbose=False):
     """
-    Evaluate inference results on simulated data by comparing with true trees.
+    Load a model from a specified file path (read-only).
 
     Parameters:
-    fasta_dir: Directory containing FASTA files
-    trees_file: Path to trees.txt file with true trees
-    output_dir: Directory to save inference results (None to skip saving)
-    sequence_type: Sequence type for model selection
-    branch_model: Branch length model for model selection
-    beam_size: Beam search size
-    window_coverage: Sliding window coverage factor
+    model_path: Path to the model .h5 file
+    window_size: Window size (240 or 1200). If None, will be inferred from model path or data.
     verbose: Whether to show verbose output
 
     Returns:
-    Dictionary containing evaluation results
+    (model, window_size): Loaded model and window size
     """
-    # Read true trees
-    if verbose:
-        _print_stderr("Reading true trees...")
-    true_trees = read_true_trees(trees_file)
+    model_path = Path(model_path)
+    if not model_path.exists():
+        raise FileNotFoundError(f"Model file not found: {model_path}")
 
-    # Get all FASTA files
-    fasta_path = Path(fasta_dir)
-    fasta_files = sorted(fasta_path.glob('*.fas'))
-    fasta_files = [str(f) for f in fasta_files if 'TRUE' in f.name]
-
-    if len(fasta_files) == 0:
-        raise ValueError(f"No FASTA files found in {fasta_dir}")
+    import sys
 
     if verbose:
-        _print_stderr(f"Found {len(fasta_files)} FASTA files to process...")
+        _print_stderr(f"Loading model from {model_path}...")
 
-    # Create output directory if needed
-    if output_dir is not None:
-        output_path = Path(output_dir)
-        output_path.mkdir(parents=True, exist_ok=True)
-        inferred_trees_file = output_path / 'inferred_trees.txt'
-        results_file = output_path / 'evaluation_results.txt'
+    # Determine window size from model path or parameter
+    if window_size is None:
+        # Try to infer from filename (e.g., S1G.h5 -> 240, S2G.h5 -> 1200)
+        model_name = model_path.stem
+        if len(model_name) >= 2 and model_name[1] == '1':
+            window_size = WINDOW_SIZE_SHORT
+        elif len(model_name) >= 2 and model_name[1] == '2':
+            window_size = WINDOW_SIZE_LONG
+        else:
+            # Default to 240 if cannot determine
+            window_size = WINDOW_SIZE_SHORT
 
-    results = []
-    inferred_trees = {}
+    if verbose:
+        _print_stderr(f"Creating model architecture (window size: {window_size})...")
 
-    # Process each FASTA file
-    for i, fasta_file in enumerate(fasta_files):
-        if verbose and (i + 1) % 10 == 0:
-            _print_stderr(f"Processing {i + 1}/{len(fasta_files)}...")
+    # Create appropriate model architecture
+    dl_model = get_dl_model(window_size)
+    if verbose:
+        _print_stderr("Model architecture created.")
 
-        # Get file name (without extension)
-        file_name = Path(fasta_file).stem.replace('_TRUE', '')
+    # Load weights (read-only, no modification)
+    if verbose:
+        _print_stderr("Loading model weights...")
+    dl_model.load_weights(filepath=str(model_path))
 
-        # Get true tree
-        if file_name not in true_trees:
-            if verbose:
-                _print_stderr(f"Warning: No true tree found for {file_name}, skipping...")
-            continue
+    if verbose:
+        _print_stderr("Model loaded successfully.")
 
-        true_tree_str = true_trees[file_name]
+    return dl_model, window_size
 
-        try:
-            # Infer tree
-            inferred_tree_str = infer_tree_from_msa(
-                fasta_file, sequence_type=sequence_type, branch_model=branch_model,
-                beam_size=beam_size, window_coverage=window_coverage, verbose=False
-            )
 
-            # Calculate RF distance
-            rf_distance, normalized_rf, max_rf = calculate_rf_distance(
-                true_tree_str, inferred_tree_str, unrooted=True
-            )
+def evaluate_numpy_data(model_path, numpy_seq_dir, numpy_label_dir,
+                        window_size=None, batch_size=32, output_dir=None,
+                        verbose=False):
+    """
+    Evaluate model accuracy and performance on numpy sequence and label data.
 
-            if rf_distance is not None:
-                result = {
-                    'file_name': file_name,
-                    'rf_distance': rf_distance,
-                    'normalized_rf': normalized_rf,
-                    'max_rf': max_rf,
-                    'success': True
-                }
-                inferred_trees[file_name] = inferred_tree_str
+    Parameters:
+    model_path: Path to the model .h5 file (read-only)
+    numpy_seq_dir: Directory containing numpy sequence files (.npy)
+    numpy_label_dir: Directory containing numpy label files (.npy)
+    window_size: Window size (240 or 1200). If None, will be inferred from model path.
+    batch_size: Batch size for prediction (default: 32)
+    output_dir: Directory to save evaluation results (None to skip saving)
+    verbose: Whether to show verbose output
+
+    Returns:
+    Dictionary containing evaluation results with accuracy and performance metrics
+    """
+    import time
+    import sys
+    from sklearn.metrics import accuracy_score, confusion_matrix, classification_report
+
+    # Load model
+    if verbose:
+        _print_stderr(f"Loading model from {model_path}...")
+    dl_model, window_size = load_model_from_path(model_path, window_size, verbose=verbose)
+    if verbose:
+        _print_stderr(f"Model loaded. Window size: {window_size}")
+
+    # Get all numpy files
+    seq_dir = Path(numpy_seq_dir)
+    label_dir = Path(numpy_label_dir)
+    seq_files = sorted([f.name for f in seq_dir.glob('*.npy')])
+    label_files = sorted([f.name for f in label_dir.glob('*.npy')])
+
+    if len(seq_files) != len(label_files):
+        raise ValueError(f"Mismatch: {len(seq_files)} sequence files but {len(label_files)} label files")
+
+    if len(seq_files) == 0:
+        raise ValueError(f"No numpy files found in {numpy_seq_dir}")
+
+    if verbose:
+        _print_stderr(f"Found {len(seq_files)} data files to process...")
+
+    if verbose:
+        # Process data in batches: load a batch, process it, then move to next batch
+        _print_stderr(f"Processing {len(seq_files)} files (loading and predicting in batches of {batch_size})...")
+
+    y_all = []
+    y_pred_proba = []
+    label_counts = np.zeros(3, dtype=np.int32)
+
+    start_time = time.time()
+
+    # Process files in batches
+    n_batches = int(np.ceil(len(seq_files) / batch_size))
+
+    for batch_idx in range(n_batches):
+        start_idx = batch_idx * batch_size
+        end_idx = min((batch_idx + 1) * batch_size, len(seq_files))
+        batch_files = list(zip(seq_files[start_idx:end_idx], label_files[start_idx:end_idx]))
+
+        # Load batch of data
+        X_batch = []
+        y_batch = []
+
+        for seq_file, label_file in batch_files:
+            seq_path = seq_dir / seq_file
+            label_path = label_dir / label_file
+
+            X = np.load(str(seq_path))
+            y = np.load(str(label_path))
+
+            # Handle different input shapes (same as in NumpyDataGenerator)
+            if len(X.shape) == 3 and X.shape[0] == 1:
+                X = X[0]  # Remove batch dimension
+
+            # Handle taxa dimension: should be 4 taxa
+            if X.shape[0] > 4:
+                X = X[:4, :]
+            elif X.shape[0] < 4:
+                padding = np.zeros((4 - X.shape[0], X.shape[1]), dtype=X.dtype)
+                X = np.vstack([X, padding])
+
+            # Handle length dimension: should be window_size
+            if X.shape[1] > window_size:
+                X = X[:, :window_size]
+            elif X.shape[1] < window_size:
+                padding = np.full((4, window_size - X.shape[1]), 4, dtype=X.dtype)
+                X = np.hstack([X, padding])
+
+            # Add channel dimension: (4, window_size) -> (4, window_size, 1)
+            if len(X.shape) == 2:
+                X = np.expand_dims(X, axis=-1)
+
+            X = X.astype(np.float32)
+
+            # Handle label: ensure it's a scalar integer
+            if isinstance(y, np.ndarray):
+                if y.size == 1:
+                    y = int(y.item())
+                elif len(y.shape) == 0:
+                    y = int(y)
+                else:
+                    raise ValueError(f"Unexpected label shape: {y.shape} for file {label_file}")
+
+            X_batch.append(X)
+            y_batch.append(y)
+
+        # Convert batch to numpy array
+        X_batch = np.array(X_batch)  # Shape: (batch_size, 4, window_size, 1)
+
+        # Make predictions on this batch
+        pred_proba = dl_model.predict(X_batch, verbose=0, batch_size=len(X_batch))
+        y_pred_proba.append(pred_proba)
+
+        # Store labels
+        y_all.extend(y_batch)
+        label_counts += np.bincount(y_batch, minlength=3)
+
+        # Calculate current accuracy and loss on all processed data so far
+        y_all_current = np.array(y_all, dtype=np.int32)
+        y_pred_proba_current = np.vstack(y_pred_proba)
+        y_pred_current = np.argmax(y_pred_proba_current, axis=1)
+
+        # Calculate accuracy
+        current_accuracy = np.mean(y_all_current == y_pred_current)
+
+        # Calculate loss (sparse categorical crossentropy)
+        # Convert labels to one-hot for loss calculation
+        y_one_hot = np.zeros((len(y_all_current), 3), dtype=np.float32)
+        y_one_hot[np.arange(len(y_all_current)), y_all_current] = 1.0
+
+        # Calculate cross-entropy loss
+        epsilon = 1e-7  # Small value to avoid log(0)
+        pred_proba_clipped = np.clip(y_pred_proba_current, epsilon, 1.0 - epsilon)
+        loss = -np.mean(np.sum(y_one_hot * np.log(pred_proba_clipped), axis=1))
+
+        # Calculate performance metrics
+        elapsed_time = time.time() - start_time
+        samples_done = len(y_all)
+        samples_per_second = samples_done / elapsed_time if elapsed_time > 0 else 0
+
+        # Estimate remaining time
+        remaining_samples = len(seq_files) - samples_done
+        estimated_remaining_time = remaining_samples / samples_per_second if samples_per_second > 0 else 0
+
+        # Show progress with performance metrics
+        files_done = end_idx
+        percent = (batch_idx + 1) * 100 // n_batches
+
+        # Format time strings
+        elapsed_str = f"{elapsed_time:.1f}s"
+        if estimated_remaining_time > 0:
+            if estimated_remaining_time < 60:
+                remaining_str = f"{estimated_remaining_time:.1f}s"
+            elif estimated_remaining_time < 3600:
+                remaining_str = f"{estimated_remaining_time/60:.1f}m"
             else:
-                result = {
-                    'file_name': file_name,
-                    'rf_distance': None,
-                    'normalized_rf': None,
-                    'max_rf': None,
-                    'success': False
-                }
+                remaining_str = f"{estimated_remaining_time/3600:.1f}h"
+        else:
+            remaining_str = "calculating..."
 
-            results.append(result)
+        if verbose:
+            _print_stderr(f"  Processed: {files_done}/{len(seq_files)} files ({percent}%) | "
+                  f"Accuracy: {current_accuracy:.4f} | "
+                  f"Loss: {loss:.4f} | "
+                  f"Speed: {samples_per_second:.1f} samples/s | "
+                  f"Elapsed: {elapsed_str} | "
+                  f"Remaining: ~{remaining_str} | "
+                  f"Batch {batch_idx + 1}/{n_batches}")
 
-        except Exception as e:
-            if verbose:
-                _print_stderr(f"Error processing {file_name}: {str(e)}")
-            results.append({
-                'file_name': file_name,
-                'rf_distance': None,
-                'normalized_rf': None,
-                'max_rf': None,
-                'success': False,
-                'error': str(e)
-            })
+    if verbose:
+        _print_stderr()  # New line after progress
 
-    # Calculate statistics
-    successful_results = [r for r in results if r['success']]
-    if len(successful_results) > 0:
-        rf_distances = [r['rf_distance'] for r in successful_results]
-        normalized_rfs = [r['normalized_rf'] for r in successful_results]
+    inference_time = time.time() - start_time
 
-        stats = {
-            'total_files': len(results),
-            'successful_inferences': len(successful_results),
-            'failed_inferences': len(results) - len(successful_results),
-            'mean_rf_distance': np.mean(rf_distances),
-            'std_rf_distance': np.std(rf_distances),
-            'min_rf_distance': np.min(rf_distances),
-            'max_rf_distance': np.max(rf_distances),
-            'mean_normalized_rf': np.mean(normalized_rfs),
-            'std_normalized_rf': np.std(normalized_rfs),
-            'min_normalized_rf': np.min(normalized_rfs),
-            'max_normalized_rf': np.max(normalized_rfs)
-        }
-    else:
-        stats = {
-            'total_files': len(results),
-            'successful_inferences': 0,
-            'failed_inferences': len(results),
-            'mean_rf_distance': None,
-            'std_rf_distance': None,
-            'min_rf_distance': None,
-            'max_rf_distance': None,
-            'mean_normalized_rf': None,
-            'std_normalized_rf': None,
-            'min_normalized_rf': None,
-            'max_normalized_rf': None
-        }
+    # Convert to numpy arrays
+    y_all = np.array(y_all, dtype=np.int32)  # Shape: (n_samples,)
+    y_pred_proba = np.vstack(y_pred_proba)  # Shape: (n_samples, 3)
+    y_pred = np.argmax(y_pred_proba, axis=1)
+
+    if verbose:
+        # Show summary
+        _print_stderr(f"Processing completed: {len(y_all)} samples")
+        _print_stderr(f"Label distribution: Class 0: {label_counts[0]}, "
+            f"Class 1: {label_counts[1]}, "
+            f"Class 2: {label_counts[2]}")
+        _print_stderr()
+
+        _print_stderr("Calculating evaluation metrics...")
+
+    # Calculate metrics
+    accuracy = accuracy_score(y_all, y_pred)
+    cm = confusion_matrix(y_all, y_pred)
+    class_report = classification_report(y_all, y_pred, output_dict=True, zero_division=0)
+
+    # Calculate per-class accuracy
+    per_class_accuracy = {}
+    for i in range(3):
+        mask = y_all == i
+        if np.sum(mask) > 0:
+            per_class_accuracy[i] = accuracy_score(y_all[mask], y_pred[mask])
+        else:
+            per_class_accuracy[i] = None
+
+    # Performance metrics
+    samples_per_second = len(y_all) / inference_time
+    avg_time_per_sample = inference_time / len(y_all)
+
+    stats = {
+        'total_samples': len(y_all),
+        'accuracy': accuracy,
+        'per_class_accuracy': per_class_accuracy,
+        'confusion_matrix': cm.tolist(),
+        'classification_report': class_report,
+        'inference_time_seconds': inference_time,
+        'samples_per_second': samples_per_second,
+        'avg_time_per_sample_ms': avg_time_per_sample * 1000,
+        'window_size': window_size,
+        'batch_size': batch_size
+    }
 
     # Save results if output directory provided
     if output_dir is not None:
-        # Save inferred trees
-        with open(inferred_trees_file, 'w') as f:
-            for file_name, tree_str in inferred_trees.items():
-                f.write(f"{file_name}\t{tree_str}\n")
+        output_path = Path(output_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
+        results_file = output_path / 'evaluation_results.txt'
+        detailed_results_file = output_path / 'detailed_results.txt'
 
-        # Save evaluation results
+        # Save summary results
         with open(results_file, 'w') as f:
-            f.write("Evaluation Results\n")
+            f.write("Model Evaluation Results\n")
             f.write("=" * 50 + "\n\n")
-            f.write(f"Total files processed: {stats['total_files']}\n")
-            f.write(f"Successful inferences: {stats['successful_inferences']}\n")
-            f.write(f"Failed inferences: {stats['failed_inferences']}\n\n")
+            f.write(f"Model path: {model_path}\n")
+            f.write(f"Window size: {window_size}\n")
+            f.write(f"Batch size: {batch_size}\n\n")
+            f.write(f"Total samples: {stats['total_samples']}\n")
+            f.write(f"Overall accuracy: {stats['accuracy']:.4f}\n\n")
 
-            if stats['successful_inferences'] > 0:
-                f.write("RF Distance Statistics:\n")
-                f.write(f"  Mean: {stats['mean_rf_distance']:.4f}\n")
-                f.write(f"  Std:  {stats['std_rf_distance']:.4f}\n")
-                f.write(f"  Min:  {stats['min_rf_distance']:.0f}\n")
-                f.write(f"  Max:  {stats['max_rf_distance']:.0f}\n\n")
-
-                f.write("Normalized RF Distance Statistics:\n")
-                f.write(f"  Mean: {stats['mean_normalized_rf']:.4f}\n")
-                f.write(f"  Std:  {stats['std_normalized_rf']:.4f}\n")
-                f.write(f"  Min:  {stats['min_normalized_rf']:.4f}\n")
-                f.write(f"  Max:  {stats['max_normalized_rf']:.4f}\n\n")
-
-            f.write("\nDetailed Results:\n")
-            f.write("-" * 50 + "\n")
-            for result in results:
-                f.write(f"{result['file_name']}\t")
-                if result['success']:
-                    f.write(f"RF={result['rf_distance']}\tNormRF={result['normalized_rf']:.4f}\n")
+            f.write("Per-class accuracy:\n")
+            for class_idx, acc in stats['per_class_accuracy'].items():
+                if acc is not None:
+                    f.write(f"  Class {class_idx}: {acc:.4f}\n")
                 else:
-                    f.write(f"FAILED")
-                    if 'error' in result:
-                        f.write(f": {result['error']}")
-                    f.write("\n")
+                    f.write(f"  Class {class_idx}: N/A (no samples)\n")
+            f.write("\n")
+
+            f.write("Confusion Matrix:\n")
+            f.write("      Predicted\n")
+            f.write("       0    1    2\n")
+            for i in range(3):
+                f.write(f"{i}   {cm[i, 0]:4d} {cm[i, 1]:4d} {cm[i, 2]:4d}\n")
+            f.write("\n")
+
+            f.write("Performance Metrics:\n")
+            f.write(f"  Total inference time: {stats['inference_time_seconds']:.2f} seconds\n")
+            f.write(f"  Samples per second: {stats['samples_per_second']:.2f}\n")
+            f.write(f"  Average time per sample: {stats['avg_time_per_sample_ms']:.4f} ms\n")
+            f.write("\n")
+
+            f.write("Classification Report:\n")
+            f.write(f"  Precision (macro avg): {class_report['macro avg']['precision']:.4f}\n")
+            f.write(f"  Recall (macro avg): {class_report['macro avg']['recall']:.4f}\n")
+            f.write(f"  F1-score (macro avg): {class_report['macro avg']['f1-score']:.4f}\n")
+            f.write(f"  Weighted avg precision: {class_report['weighted avg']['precision']:.4f}\n")
+            f.write(f"  Weighted avg recall: {class_report['weighted avg']['recall']:.4f}\n")
+            f.write(f"  Weighted avg F1-score: {class_report['weighted avg']['f1-score']:.4f}\n")
+
+        # Save detailed results (per-sample predictions)
+        with open(detailed_results_file, 'w') as f:
+            f.write("Detailed Results (per sample)\n")
+            f.write("=" * 50 + "\n")
+            f.write("File\tTrue_Label\tPredicted_Label\tConfidence\n")
+            for i, (seq_file, label_file) in enumerate(zip(seq_files, label_files)):
+                true_label = y_all[i]
+                pred_label = y_pred[i]
+                confidence = y_pred_proba[i, pred_label]
+                f.write(f"{seq_file}\t{true_label}\t{pred_label}\t{confidence:.4f}\n")
+
+        if verbose:
+            _print_stderr(f"\nResults saved to: {output_dir}")
 
     return {
-        'results': results,
         'statistics': stats,
-        'inferred_trees': inferred_trees
+        'predictions': y_pred,
+        'true_labels': y_all,
+        'prediction_probabilities': y_pred_proba
     }
 
 
 # ============================================================================
 # Model Training Functions
 # ============================================================================
+
+def _create_numpy_data_generator_class():
+    """Create NumpyDataGenerator class that inherits from keras.utils.Sequence."""
+    # Import TensorFlow/Keras to get Sequence class
+    _, _, _, _ = _import_tensorflow()
+    from keras.utils import Sequence
+
+    class NumpyDataGenerator(Sequence):
+        """
+        Data generator for loading numpy files on-the-fly during training.
+        This avoids loading all data into memory at once.
+        Inherits from keras.utils.Sequence for compatibility with Keras.
+        """
+        def __init__(self, file_pairs, batch_size=32, shuffle=True, window_size=240):
+            """
+            Initialize the data generator.
+
+            Parameters:
+            file_pairs: List of (seq_file_path, label_file_path) tuples
+            batch_size: Batch size for training
+            shuffle: Whether to shuffle data each epoch
+            window_size: Window size for sequences (240 or 1200)
+            """
+            super().__init__()
+            self.file_pairs = file_pairs
+            self.batch_size = batch_size
+            self.shuffle = shuffle
+            self.window_size = window_size
+            self.indices = np.arange(len(file_pairs))
+
+        def __len__(self):
+            """Return the number of batches per epoch."""
+            return int(np.ceil(len(self.file_pairs) / self.batch_size))
+
+        def __getitem__(self, idx):
+            """Generate one batch of data."""
+            batch_indices = self.indices[idx * self.batch_size:(idx + 1) * self.batch_size]
+            batch_X = []
+            batch_y = []
+
+            for i in batch_indices:
+                seq_path, label_path = self.file_pairs[i]
+
+                # Load data
+                X = np.load(str(seq_path))
+                y = np.load(str(label_path))
+
+                # Handle different input shapes
+                # Expected formats:
+                # - (1, num_taxa, length) -> convert to (4, window_size, 1)
+                # - (num_taxa, length) -> convert to (4, window_size, 1)
+                # - (4, length) -> convert to (4, window_size, 1)
+
+                # Remove batch dimension if present
+                if len(X.shape) == 3 and X.shape[0] == 1:
+                    X = X[0]  # Now shape: (num_taxa, length)
+
+                # Get window size from model (default 240)
+                window_size = getattr(self, 'window_size', 240)
+
+                # Handle taxa dimension: should be 4 taxa
+                if X.shape[0] > 4:
+                    # Take first 4 taxa
+                    X = X[:4, :]
+                elif X.shape[0] < 4:
+                    # Pad with zeros if less than 4 taxa
+                    padding = np.zeros((4 - X.shape[0], X.shape[1]), dtype=X.dtype)
+                    X = np.vstack([X, padding])
+
+                # Handle length dimension: should be window_size (240 or 1200)
+                if X.shape[1] > window_size:
+                    # Take first window_size positions
+                    X = X[:, :window_size]
+                elif X.shape[1] < window_size:
+                    # Pad with 4 (gap/unknown) if shorter
+                    padding = np.full((4, window_size - X.shape[1]), 4, dtype=X.dtype)
+                    X = np.hstack([X, padding])
+
+                # Add channel dimension: (4, window_size) -> (4, window_size, 1)
+                if len(X.shape) == 2:
+                    X = np.expand_dims(X, axis=-1)
+
+                # Convert to float32 for model input
+                X = X.astype(np.float32)
+
+                # Handle label: ensure it's a scalar integer
+                if isinstance(y, np.ndarray):
+                    if y.size == 1:
+                        y = int(y.item())
+                    elif len(y.shape) == 0:
+                        y = int(y)
+                    else:
+                        raise ValueError(f"Unexpected label shape: {y.shape}")
+
+                batch_X.append(X)
+                batch_y.append(y)
+
+            # Convert to numpy arrays
+            batch_X = np.array(batch_X)  # Shape: (batch_size, 4, window_size, 1)
+            batch_y = np.array(batch_y, dtype=np.int32)  # Shape: (batch_size,)
+
+            return batch_X, batch_y
+
+        def on_epoch_end(self):
+            """Shuffle indices at the end of each epoch."""
+            if self.shuffle:
+                np.random.shuffle(self.indices)
+
+        def get_all_data(self):
+            """
+            Load all data into memory (for test set evaluation).
+            Use sparingly as this defeats the purpose of the generator.
+            """
+            X_all = []
+            y_all = []
+            window_size = getattr(self, 'window_size', 240)
+
+            for seq_path, label_path in self.file_pairs:
+                X = np.load(str(seq_path))
+                y = np.load(str(label_path))
+
+                # Apply same shape transformation as __getitem__
+                if len(X.shape) == 3 and X.shape[0] == 1:
+                    X = X[0]
+
+                # Handle taxa dimension
+                if X.shape[0] > 4:
+                    X = X[:4, :]
+                elif X.shape[0] < 4:
+                    padding = np.zeros((4 - X.shape[0], X.shape[1]), dtype=X.dtype)
+                    X = np.vstack([X, padding])
+
+                # Handle length dimension
+                if X.shape[1] > window_size:
+                    X = X[:, :window_size]
+                elif X.shape[1] < window_size:
+                    padding = np.full((4, window_size - X.shape[1]), 4, dtype=X.dtype)
+                    X = np.hstack([X, padding])
+
+                # Add channel dimension
+                if len(X.shape) == 2:
+                    X = np.expand_dims(X, axis=-1)
+
+                X = X.astype(np.float32)
+
+                # Handle label
+                if isinstance(y, np.ndarray):
+                    if y.size == 1:
+                        y = int(y.item())
+                    elif len(y.shape) == 0:
+                        y = int(y)
+
+                X_all.append(X)
+                y_all.append(y)
+
+            X_all = np.array(X_all)
+            y_all = np.array(y_all, dtype=np.int32)
+            return X_all, y_all
+
+    return NumpyDataGenerator
+
+# Create the class (will be created when first needed)
+_NumpyDataGeneratorClass = None
+
+def _get_numpy_data_generator_class():
+    """Get or create the NumpyDataGenerator class."""
+    global _NumpyDataGeneratorClass
+    if _NumpyDataGeneratorClass is None:
+        _NumpyDataGeneratorClass = _create_numpy_data_generator_class()
+    return _NumpyDataGeneratorClass
+
+# Alias for backward compatibility - this is now a factory function
+def NumpyDataGenerator(*args, **kwargs):
+    """Factory function to create NumpyDataGenerator instances."""
+    cls = _get_numpy_data_generator_class()
+    return cls(*args, **kwargs)
+
+
+def get_training_file_lists(numpy_seq_dir, numpy_label_dir, train_ratio=0.8, val_ratio=0.1, test_ratio=0.1, verbose=False):
+    """
+    Get file lists for training, validation, and test sets without loading data.
+
+    Parameters:
+    numpy_seq_dir: Directory containing sequence numpy files
+    numpy_label_dir: Directory containing label numpy files
+    train_ratio: Ratio of data for training
+    val_ratio: Ratio of data for validation
+    test_ratio: Ratio of data for testing
+    verbose: Whether to show verbose output
+
+    Returns:
+    (train_file_pairs, val_file_pairs, test_file_pairs) where each is a list of (seq_path, label_path) tuples
+    """
+    if abs(train_ratio + val_ratio + test_ratio - 1.0) > 1e-6:
+        raise ValueError("train_ratio + val_ratio + test_ratio must equal 1.0")
+
+    # Get all numpy files
+    seq_dir = Path(numpy_seq_dir)
+    label_dir = Path(numpy_label_dir)
+    seq_files = sorted([f.name for f in seq_dir.glob('*.npy')])
+    label_files = sorted([f.name for f in label_dir.glob('*.npy')])
+
+    if len(seq_files) != len(label_files):
+        raise ValueError(f"Mismatch: {len(seq_files)} sequence files but {len(label_files)} label files")
+
+    if verbose:
+        _print_stderr(f"Found {len(seq_files)} data files...")
+
+    # Create file pairs
+    file_pairs = []
+    for seq_file, label_file in zip(seq_files, label_files):
+        seq_path = seq_dir / seq_file
+        label_path = label_dir / label_file
+        file_pairs.append((seq_path, label_path))
+
+    # Shuffle
+    np.random.shuffle(file_pairs)
+
+    # Split into train/val/test
+    n_total = len(file_pairs)
+    n_train = int(n_total * train_ratio)
+    n_val = int(n_total * val_ratio)
+
+    train_file_pairs = file_pairs[:n_train]
+    val_file_pairs = file_pairs[n_train:n_train + n_val]
+    test_file_pairs = file_pairs[n_train + n_val:]
+
+    if verbose:
+        _print_stderr(f"Training set: {len(train_file_pairs)} samples")
+        _print_stderr(f"Validation set: {len(val_file_pairs)} samples")
+        _print_stderr(f"Test set: {len(test_file_pairs)} samples")
+
+    return train_file_pairs, val_file_pairs, test_file_pairs
+
 
 def load_training_data(numpy_seq_dir, numpy_label_dir, train_ratio=0.8, val_ratio=0.1, test_ratio=0.1, verbose=False):
     """
@@ -2388,47 +2694,231 @@ def load_training_data(numpy_seq_dir, numpy_label_dir, train_ratio=0.8, val_rati
     return (X_train, y_train), (X_val, y_val), (X_test, y_test)
 
 
-def train_model(model, X_train, y_train, X_val, y_val, epochs=50, batch_size=32,
-                learning_rate=0.001, model_save_path=None, verbose=1):
+def _get_training_history_logger(tsv_path):
     """
-    Train a deep learning model.
+    Create a Keras Callback to save training metrics to a TSV file.
+
+    Parameters:
+    tsv_path: Path to TSV file where training history will be saved
+
+    Returns:
+    A Keras Callback instance
+    """
+    from keras.callbacks import Callback
+
+    class TrainingHistoryLogger(Callback):
+        """
+        Keras Callback to save training metrics (loss, accuracy, val_loss, val_accuracy)
+        to a TSV file after each epoch.
+        """
+        def __init__(self, tsv_path):
+            super().__init__()
+            self.tsv_path = Path(tsv_path)
+            self.tsv_path.parent.mkdir(parents=True, exist_ok=True)
+            self.epoch_data = []
+
+            # Initialize TSV file with header if it doesn't exist or is empty
+            if not self.tsv_path.exists() or self.tsv_path.stat().st_size == 0:
+                header = ['epoch', 'loss', 'accuracy', 'val_loss', 'val_accuracy']
+                pd.DataFrame(columns=header).to_csv(self.tsv_path, sep='\t', index=False)
+            else:
+                # Check if file has correct header
+                try:
+                    df = pd.read_csv(self.tsv_path, sep='\t', nrows=0)
+                    expected_columns = ['epoch', 'loss', 'accuracy', 'val_loss', 'val_accuracy']
+                    if list(df.columns) != expected_columns:
+                        # Recreate file with correct header
+                        pd.DataFrame(columns=expected_columns).to_csv(self.tsv_path, sep='\t', index=False)
+                except Exception:
+                    # If file is corrupted, recreate it
+                    header = ['epoch', 'loss', 'accuracy', 'val_loss', 'val_accuracy']
+                    pd.DataFrame(columns=header).to_csv(self.tsv_path, sep='\t', index=False)
+
+        def on_epoch_end(self, epoch, logs=None):
+            """Called at the end of each epoch to save metrics."""
+            if logs is None:
+                logs = {}
+
+            # Extract metrics (handle both with and without 'val_' prefix)
+            epoch_num = epoch + 1  # Keras uses 0-indexed epochs, we use 1-indexed
+            loss = logs.get('loss', None)
+            accuracy = logs.get('accuracy', None)
+            val_loss = logs.get('val_loss', None)
+            val_accuracy = logs.get('val_accuracy', None)
+
+            # Append to list
+            self.epoch_data.append({
+                'epoch': epoch_num,
+                'loss': loss,
+                'accuracy': accuracy,
+                'val_loss': val_loss,
+                'val_accuracy': val_accuracy
+            })
+
+            # Append to TSV file
+            new_row = pd.DataFrame([{
+                'epoch': epoch_num,
+                'loss': loss,
+                'accuracy': accuracy,
+                'val_loss': val_loss,
+                'val_accuracy': val_accuracy
+            }])
+            new_row.to_csv(self.tsv_path, mode='a', header=False, sep='\t', index=False)
+
+    return TrainingHistoryLogger(tsv_path)
+
+
+def train_model(model, train_gen, val_gen=None, epochs=100, batch_size=32,
+                learning_rate=0.001, model_save_path=None, verbose=1,
+                monitor='val_loss', patience=10):
+    """
+    Train a deep learning model using data generators.
+
+    This function automatically saves the best model based on validation performance.
+    The best model is determined by monitoring a specified metric (default: val_loss).
+    Early stopping is enabled by default to prevent overfitting.
 
     Parameters:
     model: Keras model to train
-    X_train: Training sequences
-    y_train: Training labels
-    X_val: Validation sequences
-    y_val: Validation labels
+    train_gen: Training data generator (NumpyDataGenerator or tuple of (X, y))
+    val_gen: Validation data generator (NumpyDataGenerator or tuple of (X, y)) or None
     epochs: Number of training epochs
-    batch_size: Batch size for training
+    batch_size: Batch size for training (used if generators are not provided)
     learning_rate: Learning rate
     model_save_path: Path to save trained model (None to not save)
     verbose: Verbosity level (0=silent, 1=progress, 2=one line per epoch)
+    monitor: Metric to monitor for checkpointing and early stopping.
+             Options: 'val_loss', 'val_accuracy', 'loss', 'accuracy' (default: 'val_loss')
+    patience: Number of epochs with no improvement before early stopping.
+              Set to None to disable early stopping (default: 10)
 
     Returns:
     Training history
     """
     # Compile model
     _, _, _, optimizers = _import_tensorflow()
+    from keras.callbacks import ModelCheckpoint, EarlyStopping
+
     model.compile(
         optimizer=optimizers.Adam(learning_rate=learning_rate),
         loss='sparse_categorical_crossentropy',
         metrics=['accuracy']
     )
 
-    # Train model
-    history = model.fit(
-        X_train, y_train,
-        validation_data=(X_val, y_val),
-        epochs=epochs,
-        batch_size=batch_size,
-        verbose=verbose
-    )
+    # Prepare validation data
+    validation_data = None
+    if val_gen is not None:
+        if isinstance(val_gen, tuple):
+            validation_data = val_gen
+        else:
+            validation_data = val_gen
 
-    # Save model if path provided
+    # Prepare callbacks
+    callbacks = []
+
+    # Add training history logger if model_save_path is provided
     if model_save_path is not None:
         model_path = Path(model_save_path)
+        # Save training history TSV in the same directory as the model
+        tsv_path = model_path.parent / 'training_history.tsv'
+        history_logger = _get_training_history_logger(str(tsv_path))
+        callbacks.append(history_logger)
+        if verbose >= 1:
+            _print_stderr(f"Training history will be saved to {tsv_path}")
+
+        # Add ModelCheckpoint to save best model based on validation performance
+        # This is always enabled when validation data is available
+        if validation_data is not None:
+            checkpoint_path = model_path.parent / 'best_model.weights.h5'
+            # Determine mode: 'min' for loss, 'max' for accuracy
+            mode = 'min' if 'loss' in monitor else 'max'
+            checkpoint = ModelCheckpoint(
+                filepath=str(checkpoint_path),
+                monitor=monitor,
+                save_best_only=True,
+                save_weights_only=True,
+                mode=mode,
+                verbose=1 if verbose >= 1 else 0
+            )
+            callbacks.append(checkpoint)
+            if verbose >= 1:
+                _print_stderr(f"Model checkpoint: saving best model to {checkpoint_path} (monitoring {monitor}, mode={mode})")
+
+        # Add EarlyStopping if patience is specified and validation data is available
+        if patience is not None and validation_data is not None:
+            # Determine mode: 'min' for loss, 'max' for accuracy
+            mode = 'min' if 'loss' in monitor else 'max'
+            early_stop = EarlyStopping(
+                monitor=monitor,
+                patience=patience,
+                restore_best_weights=True,  # Restore best weights when stopping
+                mode=mode,
+                verbose=1 if verbose >= 1 else 0
+            )
+            callbacks.append(early_stop)
+            if verbose >= 1:
+                _print_stderr(f"Early stopping: will stop if {monitor} doesn't improve for {patience} epochs (mode={mode})")
+
+    # Train model
+    # If using generators, don't pass batch_size (generator handles it)
+    # If using arrays, pass batch_size
+    fit_kwargs = {
+        'epochs': epochs,
+        'verbose': verbose,
+        'callbacks': callbacks
+    }
+
+    # Check if train_gen is a generator (Sequence-like object with __len__ and __getitem__)
+    # or if it's a tuple of arrays
+    is_generator = (not isinstance(train_gen, tuple) and
+                    hasattr(train_gen, '__len__') and
+                    hasattr(train_gen, '__getitem__') and
+                    hasattr(train_gen, 'on_epoch_end'))
+
+    if is_generator:
+        # Generator handles batching, so don't pass batch_size
+        fit_kwargs['x'] = train_gen
+        fit_kwargs['validation_data'] = validation_data
+    else:
+        # Arrays: need batch_size
+        fit_kwargs['x'] = train_gen[0]
+        fit_kwargs['y'] = train_gen[1]
+        fit_kwargs['validation_data'] = validation_data
+        fit_kwargs['batch_size'] = batch_size
+
+    history = model.fit(**fit_kwargs)
+
+    # Save final model if path provided
+    # Always load and save the best model when validation data is available
+    if model_save_path is not None:
+        model_path = Path(model_save_path)
+        # Keras requires .weights.h5 extension for save_weights
+        if not str(model_path).endswith('.weights.h5'):
+            # Auto-append .weights.h5 if extension is missing or different
+            if model_path.suffix in ['.h5', '.hdf5']:
+                # Replace existing extension
+                model_path = model_path.with_suffix('.weights.h5')
+            else:
+                # Append .weights.h5
+                model_path = model_path.with_suffix('.weights.h5')
+            if verbose >= 1:
+                _print_stderr(f"Note: Model path adjusted to {model_path} (Keras requires .weights.h5 extension)")
         model_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # If validation data was used, load the best model weights
+        if validation_data is not None:
+            checkpoint_path = model_path.parent / 'best_model.weights.h5'
+            if checkpoint_path.exists():
+                # Load best model weights
+                model.load_weights(str(checkpoint_path))
+                if verbose >= 1:
+                    _print_stderr(f"Loaded best model weights (based on {monitor}) from {checkpoint_path}")
+            else:
+                # If no checkpoint was saved (shouldn't happen), use current weights
+                if verbose >= 1:
+                    _print_stderr(f"Warning: No checkpoint found, using final epoch weights")
+
+        # Save the model (which is now the best model if validation was used)
         model.save_weights(str(model_path))
         if verbose >= 1:
             _print_stderr(f"Model saved to {model_save_path}")
@@ -2436,11 +2926,18 @@ def train_model(model, X_train, y_train, X_val, y_val, epochs=50, batch_size=32,
     return history
 
 
-def train_fusang_model(numpy_seq_dir, numpy_label_dir, window_size=240, epochs=50,
+def train_fusang_model(numpy_seq_dir, numpy_label_dir, window_size=240, epochs=100,
                        batch_size=32, learning_rate=0.001, train_ratio=0.8, val_ratio=0.1,
-                       model_save_path=None, verbose=1):
+                       model_save_path=None, verbose=1, monitor='val_loss', patience=10):
     """
-    Train a Fusang model from numpy data.
+    Train a Fusang model from numpy data using data generators for memory efficiency.
+
+    Note: Keras requires model_save_path to end with .weights.h5. If a different extension
+    is provided, it will be automatically adjusted.
+
+    This function automatically saves the best model based on validation performance.
+    The best model is determined by monitoring a specified metric (default: val_loss).
+    Early stopping is enabled by default to prevent overfitting.
 
     Parameters:
     numpy_seq_dir: Directory containing sequence numpy files
@@ -2453,29 +2950,107 @@ def train_fusang_model(numpy_seq_dir, numpy_label_dir, window_size=240, epochs=5
     val_ratio: Ratio of data for validation
     model_save_path: Path to save trained model
     verbose: Verbosity level
+    monitor: Metric to monitor for checkpointing and early stopping.
+             Options: 'val_loss', 'val_accuracy', 'loss', 'accuracy' (default: 'val_loss')
+    patience: Number of epochs with no improvement before early stopping.
+              Set to None to disable early stopping (default: 10)
 
     Returns:
     Trained model and training history
     """
-    # Load data
-    (X_train, y_train), (X_val, y_val), (X_test, y_test) = load_training_data(
+    # Configure GPU memory growth to avoid memory issues
+    tf, _, _, _ = _import_tensorflow()
+
+    # Disable layout optimizer to avoid warnings about layout optimization failures
+    # This is safe and won't affect training performance significantly
+    try:
+        tf.config.optimizer.set_experimental_options({'layout_optimizer': False})
+    except (AttributeError, ValueError):
+        # Fallback for older TensorFlow versions or if option is not available
+        pass
+
+    try:
+        # Try new API first (TensorFlow 2.x)
+        gpus = tf.config.list_physical_devices('GPU')
+    except AttributeError:
+        # Fall back to experimental API for older versions
+        gpus = tf.config.experimental.list_physical_devices('GPU')
+
+    if gpus:
+        try:
+            # Enable memory growth to prevent TensorFlow from allocating all GPU memory at once
+            for gpu in gpus:
+                tf.config.experimental.set_memory_growth(gpu, True)
+            if verbose >= 1:
+                _print_stderr(f"Configured {len(gpus)} GPU(s) with memory growth enabled")
+        except RuntimeError as e:
+            # Memory growth must be set before GPUs have been initialized
+            if verbose >= 1:
+                _print_stderr(f"Warning: Could not set GPU memory growth: {e}")
+
+    # Get file lists instead of loading all data
+    train_file_pairs, val_file_pairs, test_file_pairs = get_training_file_lists(
         numpy_seq_dir, numpy_label_dir, train_ratio=train_ratio, val_ratio=val_ratio,
         test_ratio=1.0 - train_ratio - val_ratio, verbose=verbose >= 1
     )
 
+    # Create data generators
+    train_gen = NumpyDataGenerator(train_file_pairs, batch_size=batch_size, shuffle=True, window_size=window_size)
+    val_gen = NumpyDataGenerator(val_file_pairs, batch_size=batch_size, shuffle=False, window_size=window_size)
+    test_gen = NumpyDataGenerator(test_file_pairs, batch_size=batch_size, shuffle=False, window_size=window_size)
+
+    # Normalize model_save_path to ensure .weights.h5 extension (Keras requirement)
+    if model_save_path is not None:
+        model_path = Path(model_save_path)
+        # Keras requires .weights.h5 extension for save_weights
+        if not str(model_path).endswith('.weights.h5'):
+            # Auto-append .weights.h5 if extension is missing or different
+            if model_path.suffix in ['.h5', '.hdf5']:
+                # Replace existing extension
+                normalized_path = model_path.with_suffix('.weights.h5')
+            else:
+                # Append .weights.h5
+                normalized_path = model_path.with_suffix('.weights.h5')
+            if verbose >= 1:
+                _print_stderr(f"Note: Model path adjusted from {model_save_path} to {normalized_path} (Keras requires .weights.h5 extension)")
+            model_save_path = str(normalized_path)
+
     # Create model based on window size
     model = get_dl_model(window_size)
 
-    # Train model
+    # Check if model file exists and load it for continued training
+    if model_save_path is not None and os.path.exists(model_save_path):
+        # Backup existing model with timestamp suffix
+        model_path = Path(model_save_path)
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_path = model_path.parent / f"{model_path.stem}_{timestamp}{model_path.suffix}"
+        shutil.copy2(model_save_path, backup_path)
+        if verbose >= 1:
+            _print_stderr(f"Existing model found at {model_save_path}")
+            _print_stderr(f"Backed up to {backup_path}")
+            _print_stderr(f"Loading existing model weights for continued training...")
+
+        # Load existing model weights
+        try:
+            model.load_weights(model_save_path)
+            if verbose >= 1:
+                _print_stderr(f"Successfully loaded model weights from {model_save_path}")
+        except Exception as e:
+            if verbose >= 1:
+                _print_stderr(f"Warning: Failed to load model weights: {e}")
+                _print_stderr("Starting training from scratch...")
+
+    # Train model using generators
     history = train_model(
-        model, X_train, y_train, X_val, y_val,
+        model, train_gen, val_gen=val_gen,
         epochs=epochs, batch_size=batch_size, learning_rate=learning_rate,
-        model_save_path=model_save_path, verbose=verbose
+        model_save_path=model_save_path, verbose=verbose,
+        monitor=monitor, patience=patience
     )
 
     # Evaluate on test set
     if verbose >= 1:
-        test_loss, test_acc = model.evaluate(X_test, y_test, verbose=0)
+        test_loss, test_acc = model.evaluate(test_gen, verbose=0)
         _print_stderr(f"Test accuracy: {test_acc:.4f}")
 
     return model, history
@@ -2521,13 +3096,13 @@ Examples:
   fusang infer -i input.fasta -o output.tree
 
   # Generate simulation data:
-  fusang simulate --simulation_dir ./simulation --num_of_topology 20 --taxa_num 5 ...
+  fusang simulate -o ./simulation -n 20 -t 5 ...
 
   # Train a model:
-  fusang train --numpy_seq_dir ./data/seq --numpy_label_dir ./data/label --model_save_path ./model.h5 ...
+  fusang train -d ./simulation/out/S1U -o ./model.h5
 
-  # Evaluate inference results:
-  fusang evaluate --fasta_dir ./fasta --trees_file ./trees.txt --output_dir ./results ...
+  # Evaluate model on numpy data:
+  fusang evaluate -m ./model.h5 -d ./simulation/out/S1U -o ./results
 
 For detailed help on a subcommand, use: fusang <subcommand> --help
         '''
@@ -2557,13 +3132,13 @@ For detailed help on a subcommand, use: fusang <subcommand> --help
         description='Generate simulated phylogenetic data for model training using INDELible.',
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    sim_parser.add_argument("--simulation_dir", type=str, required=True, help="Path to simulation output directory")
-    sim_parser.add_argument("--num_of_topology", type=int, required=True, help="Number of MSAs to simulate")
-    sim_parser.add_argument("--taxa_num", type=int, required=True, help="Number of taxa in final tree")
+    sim_parser.add_argument("-o", "--output", dest="simulation_dir", type=str, required=True, help="Path to simulation output directory")
+    sim_parser.add_argument("-n", "--num_of_topology", type=int, required=True, help="Number of MSAs to simulate")
+    sim_parser.add_argument("-t", "--taxa_num", type=int, required=True, help="Number of taxa in final tree")
     sim_parser.add_argument("--range_of_taxa_num", type=str, default='[5, 40]', help="Range of taxa numbers [lower, upper] (default: '[5, 40]')")
     sim_parser.add_argument("--len_of_msa_upper_bound", type=int, default=1200, help="Upper bound of MSA length (default: 1200)")
     sim_parser.add_argument("--len_of_msa_lower_bound", type=int, default=240, help="Lower bound of MSA length (default: 240)")
-    sim_parser.add_argument("--num_of_process", type=int, default=24, help="Number of processes for parallel execution (default: 24)")
+    sim_parser.add_argument("-p", "--num_of_process", type=int, default=cpu_count(), help=f"Number of processes for parallel execution (default: {cpu_count()}, number of CPU cores)")
     sim_parser.add_argument("--distribution_of_internal_branch_length", type=str, default='[1, 0.5, 0.3]', help="Internal branch length distribution [type, param1, param2] (default: '[1, 0.5, 0.3]')")
     sim_parser.add_argument("--distribution_of_external_branch_length", type=str, default='[1, 0.5, 0.3]', help="External branch length distribution [type, param1, param2] (default: '[1, 0.5, 0.3]')")
     sim_parser.add_argument("--range_of_mean_pairwise_divergence", type=str, default='[0.03, 0.3]', help="Range of mean pairwise divergence [min, max] (default: '[0.03, 0.3]')")
@@ -2571,15 +3146,9 @@ For detailed help on a subcommand, use: fusang <subcommand> --help
     sim_parser.add_argument("--max_indel_length", type=int, default=10, help="Maximum indel length (default: 10)")
     sim_parser.add_argument("--max_length", type=int, default=None, help="Maximum MSA length to keep (default: no limit)")
     sim_parser.add_argument("--indelible_path", type=str, default=None, help="Path to INDELible executable (default: auto-detect from simulation/indelible relative to fusang.py)")
-    sim_parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility (default: 42)")
-    sim_parser.add_argument("--batch_size", type=int, default=1000, help="Batch size for parallel processing (default: 1000)")
+    sim_parser.add_argument("-S", "--seed", type=int, default=42, help="Random seed for reproducibility (default: 42)")
+    sim_parser.add_argument("-b", "--batch_size", type=int, default=1000, help="Batch size for parallel processing (default: 1000)")
     sim_parser.add_argument("--no-cleanup", action="store_true", help="Do not remove simulate_data directory after completion")
-    sim_parser.add_argument("--evaluate", action="store_true", help="Run inference and evaluation on generated data")
-    sim_parser.add_argument("--evaluation_output", type=str, default=None, help="Directory to save evaluation results (default: simulation_dir/evaluation)")
-    sim_parser.add_argument("--sequence_type", type=str, default='standard', help="Sequence type for inference: standard (default), coding, or noncoding")
-    sim_parser.add_argument("--branch_model", type=str, default='gamma', help="Branch length model for inference: gamma (default) or uniform")
-    sim_parser.add_argument("--beam_size", type=int, default=1, help="Beam search size for inference (default: 1)")
-    sim_parser.add_argument("--window_coverage", type=float, default=1.0, help="Sliding window coverage factor for inference (default: 1.0)")
 
     # Training mode
     train_parser = subparsers.add_parser(
@@ -2588,30 +3157,37 @@ For detailed help on a subcommand, use: fusang <subcommand> --help
         description='Train deep learning models for quartet topology prediction.',
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    train_parser.add_argument("--numpy_seq_dir", type=str, required=True, help="Directory containing sequence numpy files")
-    train_parser.add_argument("--numpy_label_dir", type=str, required=True, help="Directory containing label numpy files")
-    train_parser.add_argument("--window_size", type=int, choices=[240, 1200], default=240, help="Window size for model (default: 240)")
-    train_parser.add_argument("--epochs", type=int, default=50, help="Number of training epochs (default: 50)")
-    train_parser.add_argument("--batch_size", type=int, default=32, help="Batch size for training (default: 32)")
-    train_parser.add_argument("--learning_rate", type=float, default=0.001, help="Learning rate (default: 0.001)")
+    train_parser.add_argument("-d", "--data_dir", type=str, required=True, help="Data directory (numpy_data or simulation output dir). Automatically uses data_dir/seq and data_dir/label, or data_dir/numpy_data/seq and data_dir/numpy_data/label")
+    train_parser.add_argument("-w", "--window_size", type=int, choices=[240, 1200], default=240, help="Window size for model (default: 240)")
+    train_parser.add_argument("-e", "--epochs", type=int, default=100, help="Number of training epochs (default: 100)")
+    train_parser.add_argument("-b", "--batch_size", type=int, default=32, help="Batch size for training (default: 32)")
+    train_parser.add_argument("-r", "--learning_rate", type=float, default=0.001, help="Learning rate (default: 0.001)")
     train_parser.add_argument("--train_ratio", type=float, default=0.8, help="Ratio of data for training (default: 0.8)")
     train_parser.add_argument("--val_ratio", type=float, default=0.1, help="Ratio of data for validation (default: 0.1)")
-    train_parser.add_argument("--model_save_path", type=str, required=True, help="Path to save trained model weights (.h5 file)")
+    train_parser.add_argument("-o", "--output", dest="model_save_path", type=str, required=True, help="Path to save trained model weights (.h5 file)")
+    train_parser.add_argument("--model_save_path", dest="model_save_path", type=str, help=argparse.SUPPRESS)  # Hidden alias for backward compatibility
+    train_parser.add_argument("-M", "--monitor", type=str, default='val_loss',
+                              choices=['val_loss', 'val_accuracy', 'loss', 'accuracy'],
+                              help="Metric to monitor for checkpointing and early stopping (default: val_loss)")
+    train_parser.add_argument("-P", "--patience", type=int, default=10,
+                              help="Number of epochs with no improvement before early stopping. Set to 0 to disable (default: 10)")
 
     # Evaluation mode
     eval_parser = subparsers.add_parser(
         'evaluate',
-        help='Evaluate inference results on simulated data',
-        description='Evaluate inference accuracy by comparing predicted trees with true trees using RF distance.',
+        help='Evaluate a model on numpy data',
+        description='Evaluate a trained model on numpy sequence/label data.',
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    eval_parser.add_argument("--fasta_dir", type=str, required=True, help="Directory containing FASTA files")
-    eval_parser.add_argument("--trees_file", type=str, required=True, help="Path to trees.txt file with true trees")
-    eval_parser.add_argument("--output_dir", type=str, default=None, help="Directory to save evaluation results (default: current directory)")
-    eval_parser.add_argument("--sequence_type", type=str, default='standard', help="Sequence type for inference: standard (default), coding, or noncoding")
-    eval_parser.add_argument("--branch_model", type=str, default='gamma', help="Branch length model for inference: gamma (default) or uniform")
-    eval_parser.add_argument("--beam_size", type=int, default=1, help="Beam search size for inference (default: 1)")
-    eval_parser.add_argument("--window_coverage", type=float, default=1.0, help="Sliding window coverage factor for inference (default: 1.0)")
+    eval_parser.add_argument("-m", "--model", dest="model_path", type=str, required=True, help="Path to model weights (.h5)")
+    eval_parser.add_argument("-d", "--data_dir", type=str, required=True, help="Data directory (numpy_data or simulation output dir). Automatically uses data_dir/seq and data_dir/label, or data_dir/numpy_data/seq and data_dir/numpy_data/label")
+    eval_parser.add_argument("-o", "--output", dest="output_dir", type=str, default=None, help="Directory to save evaluation results (default: do not save)")
+    eval_parser.add_argument("-w", "--window_size", type=int, choices=[240, 1200], default=None, help="Window size for evaluation (default: infer from model name)")
+    eval_parser.add_argument("-b", "--batch_size", type=int, default=32, help="Batch size for prediction (default: 32)")
+
+    if len(sys.argv) == 1:
+        parser.print_help()
+        sys.exit(0)
 
     # Parse arguments
     args = parser.parse_args()
@@ -2619,6 +3195,22 @@ For detailed help on a subcommand, use: fusang <subcommand> --help
     # Validate that quiet and verbose are not both specified
     if hasattr(args, 'quiet') and hasattr(args, 'verbose') and args.quiet and args.verbose:
         parser.error("Cannot specify both -q/--quiet and -v/--verbose")
+
+    # Derive numpy directories for train and evaluate modes from data_dir
+    if hasattr(args, 'mode') and hasattr(args, 'data_dir'):
+        if args.mode in ['train', 'evaluate']:
+            data_path = Path(args.data_dir)
+            # Check if data_dir points to numpy_data directory (has seq/ and label/ subdirectories)
+            if (data_path / 'seq').exists() and (data_path / 'label').exists():
+                # data_dir is numpy_data directory
+                args.numpy_seq_dir = str(data_path / 'seq')
+                args.numpy_label_dir = str(data_path / 'label')
+            elif (data_path / 'numpy_data' / 'seq').exists() and (data_path / 'numpy_data' / 'label').exists():
+                # data_dir is simulation output directory
+                args.numpy_seq_dir = str(data_path / 'numpy_data' / 'seq')
+                args.numpy_label_dir = str(data_path / 'numpy_data' / 'label')
+            else:
+                raise ValueError(f"Invalid data_dir: {args.data_dir}. Expected numpy_data directory (with seq/ and label/ subdirectories) or simulation output directory (with numpy_data/seq/ and numpy_data/label/ subdirectories)")
 
     # Determine verbosity
     verbose = args.verbose and not args.quiet
@@ -2634,22 +3226,14 @@ For detailed help on a subcommand, use: fusang <subcommand> --help
             range_of_mean_pairwise_divergence = list(eval(args.range_of_mean_pairwise_divergence))
             range_of_indel_substitution_rate = list(eval(args.range_of_indel_substitution_rate))
 
-            # Determine evaluation output directory
-            eval_output_dir = args.evaluation_output
-            if eval_output_dir is None and args.evaluate:
-                eval_output_dir = str(Path(args.simulation_dir) / 'evaluation')
-
             result = run_full_simulation(
                 args.simulation_dir, args.num_of_topology, args.taxa_num, range_of_taxa_num,
                 args.len_of_msa_upper_bound, args.len_of_msa_lower_bound, args.num_of_process,
                 distribution_of_internal_branch_length, distribution_of_external_branch_length,
                 range_of_mean_pairwise_divergence, range_of_indel_substitution_rate,
                 args.max_indel_length, max_length=args.max_length, cleanup=not args.no_cleanup,
-                verbose=verbose, run_inference=args.evaluate, evaluate_results=args.evaluate,
-                output_dir=eval_output_dir, sequence_type=args.sequence_type,
-                branch_model=args.branch_model, beam_size=args.beam_size,
-                window_coverage=args.window_coverage,
-                indelible_path=args.indelible_path, seed=args.seed, batch_size=args.batch_size
+                verbose=verbose, indelible_path=args.indelible_path,
+                seed=args.seed, batch_size=args.batch_size
             )
 
             if verbose:
@@ -2658,40 +3242,39 @@ For detailed help on a subcommand, use: fusang <subcommand> --help
                 _print_stderr(f"  Labels: {result['numpy_label_dir']}")
                 _print_stderr(f"  FASTA: {result['fasta_dir']}")
                 if 'evaluation' in result:
-                    stats = result['evaluation']['statistics']
-                    _print_stderr(f"\nEvaluation results saved to: {eval_output_dir}")
+                    _print_stderr("\nEvaluation results saved (see evaluation directory in simulation output).")
 
         elif args.mode == 'evaluate':
-            # Evaluation mode (standalone)
+            # Evaluation mode (standalone) - numpy data evaluation only
             output_dir = args.output_dir
-            if output_dir is None:
-                output_dir = os.getcwd()
 
-            evaluation_results = evaluate_simulation_results(
-                args.fasta_dir, args.trees_file, output_dir=output_dir,
-                sequence_type=args.sequence_type, branch_model=args.branch_model,
-                beam_size=args.beam_size, window_coverage=args.window_coverage, verbose=verbose
+            evaluation_results = evaluate_numpy_data(
+                args.model_path, args.numpy_seq_dir, args.numpy_label_dir,
+                window_size=args.window_size, batch_size=args.batch_size,
+                output_dir=output_dir, verbose=verbose
             )
 
-            if verbose:
-                stats = evaluation_results['statistics']
-                _print_stderr(f"\nEvaluation Results:")
-                _print_stderr(f"  Total files: {stats['total_files']}")
-                _print_stderr(f"  Successful: {stats['successful_inferences']}")
-                _print_stderr(f"  Failed: {stats['failed_inferences']}")
-                if stats['successful_inferences'] > 0:
-                    _print_stderr(f"  Mean RF distance: {stats['mean_rf_distance']:.4f} ± {stats['std_rf_distance']:.4f}")
-                    _print_stderr(f"  Mean normalized RF: {stats['mean_normalized_rf']:.4f} ± {stats['std_normalized_rf']:.4f}")
+            stats = evaluation_results['statistics']
+            _print_stderr("\nEvaluation Results:")
+            _print_stderr(f"  Total samples: {stats['total_samples']}")
+            _print_stderr(f"  Accuracy: {stats['accuracy']:.4f}")
+            _print_stderr(f"  Window size: {stats['window_size']}")
+            _print_stderr(f"  Batch size: {stats['batch_size']}")
+            if verbose and output_dir is not None:
                 _print_stderr(f"\nResults saved to: {output_dir}")
 
         elif args.mode == 'train':
             # Training mode
+            # Convert patience: 0 means disable early stopping (None)
+            patience = None if args.patience == 0 else args.patience
+
             model, history = train_fusang_model(
                 args.numpy_seq_dir, args.numpy_label_dir,
                 window_size=args.window_size, epochs=args.epochs,
                 batch_size=args.batch_size, learning_rate=args.learning_rate,
                 train_ratio=args.train_ratio, val_ratio=args.val_ratio,
-                model_save_path=args.model_save_path, verbose=2 if verbose else 1
+                model_save_path=args.model_save_path, verbose=2 if verbose else 1,
+                monitor=args.monitor, patience=patience
             )
 
             if verbose:

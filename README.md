@@ -63,32 +63,34 @@ For more details about the test suite, see [tests/README.md](tests/README.md).
 
 ### 1. Quick start
 
-You can run Fusang using default parameter setting through the command as follows:
+Fusang now uses subcommands. Use `infer` for tree inference:
 
 ```sh
-uv run fusang.py -m /path/to/your_msa.fas -s your_prefix
+uv run fusang.py infer -i /path/to/your_msa.fas -o dl_output/result.txt
 ```
 
 An example of command as follows:
 
 ```sh
-python fusang.py -m ./example_msa/msa1.fas -s dl_output_1
+uv run fusang.py infer -i ./example_msa/a.fas -o dl_output/your_prefix.txt
 ```
 
-This command will do phylogenetic reconstruction of your MSA file, the result will be saved in file with the prefix that you set in `--save_prefix` (or `-s`). The output is a phylogenetic tree in Newick format.
+This command runs phylogenetic reconstruction of your MSA file. The output is a phylogenetic tree in Newick format. If `-o/--output` is omitted, the tree is written to stdout.
 
-The meaning of these two mandatory parameter:
+The required parameter:
 
-`-m, --msa_dir` The path to MSA file, for current version of Fusang, we support both fasta and phylip format of MSA. The example of current MSA format can be seen in the directory of `example_msa`
+- `-i, --input` The path to the MSA file. For current version of Fusang, we support both FASTA and PHYLIP format of MSA. The example of current MSA format can be seen in the directory of `example_msa`.
 
-`-s, --save_prefix`  The prefix of output file, the predicted tree will be saved on the directory of `dl_output` , with the prefix that set in this parameter. The output file contains a phylogenetic tree in Newick format. You can see `example_dl_output` to find the example of predicted tree.
+Optional output:
+
+- `-o, --output` The output tree file path (Newick). If not set, Fusang writes the tree to stdout.
 
 **Viewing the tree structure:**
 
 You can pipe the output directly to `treeview.py` to visualize the tree structure in ASCII format:
 
 ```sh
-uv run fusang.py example_msa/a.fas -q | uv run treeview.py
+uv run fusang.py infer -i example_msa/a.fas -q | uv run treeview.py
 ```
 
 This command will:
@@ -115,13 +117,13 @@ cat output.tree | uv run treeview.py
 
 **Required parameters:**
 
-`-m, --msa_dir` The path of your msa file
-
-`-s, --save_prefix` The prefix of the result file
+`-i, --input` The path of your MSA file
 
 **Optional parameters:**
 
 You can set the parameters as follows for specific scenario
+
+`-o, --output` Output tree file path (Newick). If not set, prints to stdout
 
 `-b, --beam_size` The size of beam in the beam search procedure, default beam size is 1
 
@@ -194,15 +196,15 @@ Each `.h5` file contains the pre-trained weights for the corresponding model con
 # Default: standard sequence type, gamma branch model
 # For MSA ≤ 1210 bp: loads model/S1G.h5
 # For MSA > 1210 bp: loads model/S2G.h5
-uv run fusang.py -m input.fas -s output
+uv run fusang.py infer -i input.fas -o output.tree
 
 # Coding sequences with gamma branch model
 # For MSA ≤ 1210 bp: loads model/C1G.h5
-uv run fusang.py -m input.fas -s output -t coding
+uv run fusang.py infer -i input.fas -o output.tree -t coding
 
 # Non-coding sequences with uniform branch model
 # For MSA > 1210 bp: loads model/N2U.h5
-uv run fusang.py -m input.fas -s output -t noncoding -r uniform
+uv run fusang.py infer -i input.fas -o output.tree -t noncoding -r uniform
 ```
 
 #### Recommendation
@@ -212,6 +214,201 @@ uv run fusang.py -m input.fas -s output -t noncoding -r uniform
 - Use `-t standard` (default) for mixed sequences or when uncertain
 - Use `-r gamma` (default) for most biological datasets
 - Use `-r uniform` only if you have specific reasons to assume uniform branch lengths
+
+---
+
+## Simulation Data Generation
+
+Use `simulate` to generate FASTA and numpy training data with INDELible:
+
+```sh
+uv run fusang.py simulate -o ./simulation/out/S1U -n 20 -t 5
+```
+
+Key options:
+
+- `-o, --output`: Simulation output directory (creates `fasta_data/` and `numpy_data/`)
+- `-n, --num_of_topology`: Number of MSAs to simulate
+- `-t, --taxa_num`: Number of taxa in the final tree
+- `-p, --num_of_process`: Number of processes (defaults to CPU core count)
+- `--evaluate`: Run inference and evaluation after simulation
+- `--evaluation_output`: Directory to save evaluation results
+
+## Model Training
+
+Fusang supports training custom models from simulated or real phylogenetic data. The training process includes automatic best model selection, early stopping, and comprehensive training history logging.
+
+### Quick Start
+
+To train a model, you need:
+
+1. Sequence data in numpy format (`.npy` files)
+2. Label data in numpy format (`.npy` files)
+
+```sh
+uv run fusang.py train \
+  -d /path/to/simulation/out/S1U \
+  -o model/my_model.weights.h5
+```
+
+### Training Parameters
+
+**Required parameters:**
+
+- `-d, --data_dir`: Data directory. Accepts a `numpy_data` directory (with `seq/` and `label/`) or a simulation output directory (with `numpy_data/seq/` and `numpy_data/label/`).
+- `-o, --output`: Path to save trained model weights (`.weights.h5` file). If another extension is provided, it will be adjusted to `.weights.h5`.
+
+**Optional parameters:**
+
+- `-w, --window_size`: Window size for model (240 or 1200, default: 240)
+- `-e, --epochs`: Number of training epochs (default: 100)
+- `-b, --batch_size`: Batch size for training (default: 32)
+- `-r, --learning_rate`: Learning rate (default: 0.001)
+- `--train_ratio`: Ratio of data for training (default: 0.8)
+- `--val_ratio`: Ratio of data for validation (default: 0.1)
+- `-M, --monitor`: Metric to monitor for checkpointing and early stopping
+  - Options: `val_loss`, `val_accuracy`, `loss`, `accuracy` (default: `val_loss`)
+- `-P, --patience`: Number of epochs with no improvement before early stopping (default: 10)
+  - Set to `0` to disable early stopping
+
+### Training Features
+
+#### 1. Automatic Best Model Selection
+
+The training process automatically saves the best model based on validation performance:
+
+- **Best model checkpoint**: Saved to `best_model.weights.h5` in the same directory as `model_save_path`
+- **Final model**: The best model weights are automatically loaded and saved to `model_save_path` after training completes
+- **Monitoring metric**: By default, monitors `val_loss` (lower is better)
+  - For `val_loss` or `loss`: Lower values are better
+  - For `val_accuracy` or `accuracy`: Higher values are better
+
+#### 2. Early Stopping
+
+Early stopping prevents overfitting by automatically stopping training when the monitored metric stops improving:
+
+- **Default patience**: 10 epochs
+- **Trigger condition**: The monitored metric (e.g., `val_loss`) doesn't improve for `patience` consecutive epochs
+- **Automatic weight restoration**: When early stopping triggers, the model automatically restores the best weights
+- **Disable early stopping**: Set `--patience 0` to train for the full number of epochs
+
+**Example scenarios:**
+
+- Epochs 1-5: `val_loss` decreases from 0.8 to 0.5 (best at epoch 5)
+- Epochs 6-15: `val_loss` fluctuates between 0.5-0.6 (no improvement)
+- Epoch 16: Early stopping triggers (10 epochs without improvement)
+- Result: Training stops, model restored to epoch 5 weights (best model)
+
+#### 3. Training History Logging
+
+Each epoch's metrics are automatically saved to `training_history.tsv` in the same directory as the model:
+
+- **File location**: `{model_save_path directory}/training_history.tsv`
+- **Format**: TSV (tab-separated values)
+- **Columns**: `epoch`, `loss`, `accuracy`, `val_loss`, `val_accuracy`
+- **Usage**: Can be used to plot training curves and analyze training progress
+
+**Example training history file:**
+
+```tsv
+epoch	loss	accuracy	val_loss	val_accuracy
+1	0.8234	0.6543	0.7123	0.7234
+2	0.7123	0.7234	0.6543	0.7654
+3	0.6543	0.7654	0.6123	0.7890
+...
+```
+
+### Training Output
+
+After training completes, the following files are created in the model directory:
+
+```
+model_directory/
+├── my_model.weights.h5      # Final model (contains best weights)
+├── best_model.weights.h5    # Best model checkpoint (backup)
+└── training_history.tsv     # Training metrics for each epoch
+```
+
+### Training Workflow
+
+1. **Data Splitting**: Data is automatically split into training (80%), validation (10%), and test (10%) sets
+2. **Model Initialization**: Model architecture is selected based on `window_size` (240 or 1200)
+3. **Training Loop**:
+   - Each epoch trains on the training set
+   - Validates on the validation set
+   - Saves metrics to `training_history.tsv`
+   - Updates best model checkpoint if validation performance improves
+4. **Early Stopping Check**: If no improvement for `patience` epochs, training stops early
+5. **Final Model Save**: Best model weights are loaded and saved to `model_save_path`
+
+### Best Practices
+
+1. **Use validation set**: Always use a validation set (`val_ratio > 0`) to enable best model selection and early stopping
+2. **Monitor validation metrics**: Use `val_loss` or `val_accuracy` (not training metrics) to avoid overfitting
+3. **Set appropriate patience**:
+   - Small datasets: Lower patience (5-10)
+   - Large datasets: Higher patience (10-20)
+4. **Analyze training history**: Check `training_history.tsv` to identify overfitting or underfitting
+5. **Continue training**: If training was interrupted, you can continue by loading the existing model weights
+
+### Example: Training with Custom Parameters
+
+```sh
+# Train with custom parameters
+uv run fusang.py train \
+  -d simulation/out/S1U \
+  -o model_new/S1U.weights.h5 \
+  -w 240 \
+  -e 100 \
+  -b 64 \
+  -r 0.0005 \
+  --train_ratio 0.8 \
+  --val_ratio 0.1 \
+  -M val_loss \
+  -P 15
+```
+
+### Example: Disable Early Stopping
+
+```sh
+# Train for full number of epochs (no early stopping)
+uv run fusang.py train \
+  -d /path/to/numpy_data \
+  -o model.weights.h5 \
+  -e 200 \
+  -P 0
+```
+
+### Example: Monitor Validation Accuracy
+
+```sh
+# Monitor validation accuracy instead of loss
+uv run fusang.py train \
+  -d /path/to/numpy_data \
+  -o model.weights.h5 \
+  -M val_accuracy \
+  -P 10
+```
+
+For more information about generating training data, see [simulation/README.md](simulation/README.md).
+
+---
+
+## Model Evaluation (numpy data)
+
+Evaluate a model on numpy data generated from simulations or existing datasets:
+
+```sh
+uv run fusang.py evaluate \
+  -m model/S1U.weights.h5 \
+  -d ./simulation/out/S1U \
+  -o ./results
+```
+
+Optional parameters:
+
+- `--window_size`: Window size for evaluation (240 or 1200). If not set, it is inferred from the model filename.
+- `--batch_size`: Batch size for prediction (default: 32).
 
 ## Meaning of each file in this repository
 

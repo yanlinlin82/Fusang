@@ -828,7 +828,9 @@ def _gen_newick(args):
 
     taxon_count_model = scipy.stats.uniform(range_of_taxa_num[0], range_of_taxa_num[1])
     tree = PhyloTree()
-    tree.populate(int(taxon_count_model.rvs()), random_branches=True)
+    raw_taxa_count = int(round(taxon_count_model.rvs()))
+    taxa_count = max(taxa_num, raw_taxa_count, 2)
+    tree.populate(taxa_count, random_branches=True)
     current_internal_index = 0
     current_leaf_index = 0
 

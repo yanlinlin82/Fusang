@@ -138,9 +138,6 @@ else:
     warnings.filterwarnings('ignore', category=FutureWarning)
 
 
-# TensorFlow and Keras are imported lazily when needed (see _import_tensorflow function)
-
-
 logger = logging.getLogger('fusang')
 _stream_handler = None
 if not logger.handlers:
@@ -3160,7 +3157,8 @@ def _extract_inference_args(args):
     return msa_file, output_path, beam_size, sequence_type, branch_model, window_coverage
 
 
-if __name__ == '__main__':
+def init_parser():
+    """Initialize the main argument parser with subcommands."""
     parser = argparse.ArgumentParser(
         'fusang',
         description='Fusang: Deep learning-based phylogenetic tree inference',
@@ -3190,6 +3188,12 @@ For detailed help on a subcommand, use: fusang <subcommand> --help
     subparsers = parser.add_subparsers(dest='mode', help='Operation mode', metavar='{infer,simulate,train,evaluate}')
     subparsers.required = True
 
+    return parser, subparsers
+
+
+def add_infer_parser(subparsers):
+    """Add the 'infer' subcommand parser."""
+
     # Inference mode
     infer_parser = subparsers.add_parser(
         'infer',
@@ -3199,6 +3203,10 @@ For detailed help on a subcommand, use: fusang <subcommand> --help
     )
     _add_verbosity_args(infer_parser)
     _add_inference_args(infer_parser)
+
+
+def add_simulate_parser(subparsers):
+    """Add the 'simulate' subcommand parser."""
 
     # Simulation mode
     sim_parser = subparsers.add_parser(
@@ -3226,6 +3234,10 @@ For detailed help on a subcommand, use: fusang <subcommand> --help
     sim_parser.add_argument("-b", "--batch_size", type=int, default=1000, help="Batch size for parallel processing (default: 1000)")
     sim_parser.add_argument("--no-cleanup", action="store_true", help="Do not remove simulate_data directory after completion")
 
+
+def add_train_parser(subparsers):
+    """Add the 'train' subcommand parser."""
+
     # Training mode
     train_parser = subparsers.add_parser(
         'train',
@@ -3249,6 +3261,10 @@ For detailed help on a subcommand, use: fusang <subcommand> --help
     train_parser.add_argument("-P", "--patience", type=int, default=10,
                               help="Number of epochs with no improvement before early stopping. Set to 0 to disable (default: 10)")
 
+
+def add_evaluate_parser(subparsers):
+    """Add the 'evaluate' subcommand parser."""
+
     # Evaluation mode
     eval_parser = subparsers.add_parser(
         'evaluate',
@@ -3263,17 +3279,17 @@ For detailed help on a subcommand, use: fusang <subcommand> --help
     eval_parser.add_argument("-w", "--window_size", type=int, choices=[240, 1200], default=None, help="Window size for evaluation (default: infer from model name)")
     eval_parser.add_argument("-b", "--batch_size", type=int, default=32, help="Batch size for prediction (default: 32)")
 
-    if len(sys.argv) == 1:
-        parser.print_help()
-        sys.exit(0)
 
-    # Parse arguments
-    args = parser.parse_args()
+def check_args_verbose(args, parser):
+    """Check for conflicting quiet and verbose flags."""
+    if args.quiet and args.verbose:
+        parser.error("Cannot use both --quiet and --verbose flags together.")
+    verbose = args.verbose and not args.quiet
+    _configure_logging(verbose=verbose, quiet=args.quiet)
+    return verbose
 
-    # Validate that quiet and verbose are not both specified
-    if hasattr(args, 'quiet') and hasattr(args, 'verbose') and args.quiet and args.verbose:
-        parser.error("Cannot specify both -q/--quiet and -v/--verbose")
 
+def check_args_mode_and_data_dir(args, parser):
     # Derive numpy directories for train and evaluate modes from data_dir
     if hasattr(args, 'mode') and hasattr(args, 'data_dir'):
         if args.mode in ['train', 'evaluate']:
@@ -3290,85 +3306,109 @@ For detailed help on a subcommand, use: fusang <subcommand> --help
             else:
                 raise ValueError(f"Invalid data_dir: {args.data_dir}. Expected numpy_data directory (with seq/ and label/ subdirectories) or simulation output directory (with numpy_data/seq/ and numpy_data/label/ subdirectories)")
 
-    # Determine verbosity
-    verbose = args.verbose and not args.quiet
-    _configure_logging(verbose=verbose, quiet=args.quiet)
+
+def run_infer_mode(args):
+    msa_file, output_path, beam_size, sequence_type, branch_model, window_coverage = _extract_inference_args(args)
+
+    # Use the unified inference function
+    searched_tree = infer_tree_from_msa(
+        msa_file, sequence_type=sequence_type, branch_model=branch_model,
+        beam_size=beam_size, window_coverage=window_coverage
+    )
+
+    # Write output
+    write_output(searched_tree, output_path)
+
+
+def run_simulate_mode(args):
+    # Simulation mode
+    range_of_taxa_num = list(eval(args.range_of_taxa_num))
+    distribution_of_internal_branch_length = list(eval(args.distribution_of_internal_branch_length))
+    distribution_of_external_branch_length = list(eval(args.distribution_of_external_branch_length))
+    range_of_mean_pairwise_divergence = list(eval(args.range_of_mean_pairwise_divergence))
+    range_of_indel_substitution_rate = list(eval(args.range_of_indel_substitution_rate))
+
+    result = run_full_simulation(
+        args.simulation_dir, args.num_of_topology, args.taxa_num, range_of_taxa_num,
+        args.len_of_msa_upper_bound, args.len_of_msa_lower_bound, args.num_of_process,
+        distribution_of_internal_branch_length, distribution_of_external_branch_length,
+        range_of_mean_pairwise_divergence, range_of_indel_substitution_rate,
+        args.max_indel_length, max_length=args.max_length, cleanup=not args.no_cleanup,
+        indelible_path=args.indelible_path,
+        seed=args.seed, batch_size=args.batch_size
+    )
+
+    logger.debug(f"\nSimulation completed. Data saved to:")
+    logger.debug(f"  Sequences: {result['numpy_seq_dir']}")
+    logger.debug(f"  Labels: {result['numpy_label_dir']}")
+    logger.debug(f"  FASTA: {result['fasta_dir']}")
+    if 'evaluation' in result:
+        logger.debug("\nEvaluation results saved (see evaluation directory in simulation output).")
+
+
+def run_train_mode(args):
+    # Training mode
+    # Convert patience: 0 means disable early stopping (None)
+    patience = None if args.patience == 0 else args.patience
+
+    train_verbose = 0 if args.quiet else 2 if verbose else 1
+    model, history = train_fusang_model(
+        args.numpy_seq_dir, args.numpy_label_dir,
+        window_size=args.window_size, epochs=args.epochs,
+        batch_size=args.batch_size, learning_rate=args.learning_rate,
+        train_ratio=args.train_ratio, val_ratio=args.val_ratio,
+        model_save_path=args.model_save_path, verbose=train_verbose,
+        monitor=args.monitor, patience=patience
+    )
+
+    if verbose:
+        logger.debug(f"\nTraining completed. Model saved to: {args.model_save_path}")
+
+
+def run_evaluate_mode(args):
+    # Evaluation mode (standalone) - numpy data evaluation only
+    output_dir = args.output_dir
+
+    evaluation_results = evaluate_numpy_data(
+        args.model_path, args.numpy_seq_dir, args.numpy_label_dir,
+        window_size=args.window_size, batch_size=args.batch_size,
+        output_dir=output_dir
+    )
+
+    stats = evaluation_results['statistics']
+    logger.info("\nEvaluation Results:")
+    logger.info(f"  Total samples: {stats['total_samples']}")
+    logger.info(f"  Accuracy: {stats['accuracy']:.4f}")
+    logger.info(f"  Window size: {stats['window_size']}")
+    logger.info(f"  Batch size: {stats['batch_size']}")
+    if verbose and output_dir is not None:
+        logger.info(f"\nResults saved to: {output_dir}")
+
+
+if __name__ == '__main__':
+    parser, subparsers = init_parser()
+    add_infer_parser(subparsers)
+    add_simulate_parser(subparsers)
+    add_train_parser(subparsers)
+    add_evaluate_parser(subparsers)
+
+    if len(sys.argv) == 1:
+        parser.print_help()
+        sys.exit(0)
+
+    args = parser.parse_args()
+    verbose = check_args_verbose(args, parser)
+    check_args_mode_and_data_dir(args, parser)
 
     # Use 'with' statement to ensure stderr is properly restored
     with _stderr_redirector:
-        # Handle different modes
-        if args.mode == 'simulate':
-            # Simulation mode
-            range_of_taxa_num = list(eval(args.range_of_taxa_num))
-            distribution_of_internal_branch_length = list(eval(args.distribution_of_internal_branch_length))
-            distribution_of_external_branch_length = list(eval(args.distribution_of_external_branch_length))
-            range_of_mean_pairwise_divergence = list(eval(args.range_of_mean_pairwise_divergence))
-            range_of_indel_substitution_rate = list(eval(args.range_of_indel_substitution_rate))
-
-            result = run_full_simulation(
-                args.simulation_dir, args.num_of_topology, args.taxa_num, range_of_taxa_num,
-                args.len_of_msa_upper_bound, args.len_of_msa_lower_bound, args.num_of_process,
-                distribution_of_internal_branch_length, distribution_of_external_branch_length,
-                range_of_mean_pairwise_divergence, range_of_indel_substitution_rate,
-                args.max_indel_length, max_length=args.max_length, cleanup=not args.no_cleanup,
-                indelible_path=args.indelible_path,
-                seed=args.seed, batch_size=args.batch_size
-            )
-
-            logger.debug(f"\nSimulation completed. Data saved to:")
-            logger.debug(f"  Sequences: {result['numpy_seq_dir']}")
-            logger.debug(f"  Labels: {result['numpy_label_dir']}")
-            logger.debug(f"  FASTA: {result['fasta_dir']}")
-            if 'evaluation' in result:
-                logger.debug("\nEvaluation results saved (see evaluation directory in simulation output).")
-
-        elif args.mode == 'evaluate':
-            # Evaluation mode (standalone) - numpy data evaluation only
-            output_dir = args.output_dir
-
-            evaluation_results = evaluate_numpy_data(
-                args.model_path, args.numpy_seq_dir, args.numpy_label_dir,
-                window_size=args.window_size, batch_size=args.batch_size,
-                output_dir=output_dir
-            )
-
-            stats = evaluation_results['statistics']
-            logger.info("\nEvaluation Results:")
-            logger.info(f"  Total samples: {stats['total_samples']}")
-            logger.info(f"  Accuracy: {stats['accuracy']:.4f}")
-            logger.info(f"  Window size: {stats['window_size']}")
-            logger.info(f"  Batch size: {stats['batch_size']}")
-            if verbose and output_dir is not None:
-                logger.info(f"\nResults saved to: {output_dir}")
-
+        if args.mode == 'infer':
+            run_infer_mode(args)
+        elif args.mode == 'simulate':
+            run_simulate_mode(args)
         elif args.mode == 'train':
-            # Training mode
-            # Convert patience: 0 means disable early stopping (None)
-            patience = None if args.patience == 0 else args.patience
-
-            train_verbose = 0 if args.quiet else 2 if verbose else 1
-            model, history = train_fusang_model(
-                args.numpy_seq_dir, args.numpy_label_dir,
-                window_size=args.window_size, epochs=args.epochs,
-                batch_size=args.batch_size, learning_rate=args.learning_rate,
-                train_ratio=args.train_ratio, val_ratio=args.val_ratio,
-                model_save_path=args.model_save_path, verbose=train_verbose,
-                monitor=args.monitor, patience=patience
-            )
-
-            if verbose:
-                logger.debug(f"\nTraining completed. Model saved to: {args.model_save_path}")
-
-        elif args.mode == 'infer':
-            msa_file, output_path, beam_size, sequence_type, branch_model, window_coverage = _extract_inference_args(args)
-
-            # Use the unified inference function
-            searched_tree = infer_tree_from_msa(
-                msa_file, sequence_type=sequence_type, branch_model=branch_model,
-                beam_size=beam_size, window_coverage=window_coverage
-            )
-
-            # Write output
-            write_output(searched_tree, output_path)
+            run_train_mode(args)
+        elif args.mode == 'evaluate':
+            run_evaluate_mode(args)
         else:
             parser.error("Unknown mode. Use --help for available subcommands.")

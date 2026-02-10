@@ -140,14 +140,23 @@ else:
 
 logger = logging.getLogger('fusang')
 _stream_handler = None
+
+class MicrosecondFormatter(logging.Formatter):
+    def formatTime(self, record, datefmt=None):
+        ct = datetime.datetime.fromtimestamp(record.created)
+        return f"{ct.strftime('%Y-%m-%d %H:%M:%S')}.{ct.microsecond:06d}"
+
+_log_formatter = MicrosecondFormatter('%(asctime)s: %(message)s')
+
 if not logger.handlers:
     _stream_handler = logging.StreamHandler(sys.stderr)
-    _stream_handler.setFormatter(logging.Formatter('%(message)s'))
+    _stream_handler.setFormatter(_log_formatter)
     logger.addHandler(_stream_handler)
 else:
     for handler in logger.handlers:
         if isinstance(handler, logging.StreamHandler):
             _stream_handler = handler
+            _stream_handler.setFormatter(_log_formatter)
             break
 
 logger.setLevel(logging.DEBUG)
@@ -157,8 +166,10 @@ def _configure_logging(verbose=False, quiet=False):
     global _stream_handler
     if _stream_handler is None:
         _stream_handler = logging.StreamHandler(sys.stderr)
-        _stream_handler.setFormatter(logging.Formatter('%(message)s'))
+        _stream_handler.setFormatter(_log_formatter)
         logger.addHandler(_stream_handler)
+    else:
+        _stream_handler.setFormatter(_log_formatter)
 
     if quiet:
         _stream_handler.setLevel(logging.WARNING)
@@ -492,6 +503,7 @@ class FusangTreeBuilder:
 
         # Add remaining taxa one by one
         for i in range(4, len(current_leave_node_name)):
+            logger.debug(f"Adding taxon index {i}...")
             candidate_tree_beam = []
 
             for j in range(len(optim_tree_beam)):
@@ -562,6 +574,8 @@ class FusangTreeBuilder:
                     edge_1_list.append(edge_1)
                     new_node_dists_list.append(dists_x)
 
+                logger.debug(f"Tree {j}: Considering {len(edge_0_list)} edges for insertion.")
+
                 # Apply masking if enabled
                 if self.use_masking and self.start_end_list is not None and self.comb_of_id is not None:
                     # Map edge tuple to index to retrieve distances later
@@ -572,12 +586,15 @@ class FusangTreeBuilder:
 
                     if mask_node_pairs is not None:
                         mask_node_pairs = list(set(mask_node_pairs))
+                        logger.debug(f"Tree {j}: Masking {len(mask_node_pairs)} node pairs from {len(edge_list)} candidate edges.")
                         for node_pairs in mask_node_pairs:
                             node1 = chr(ord(u'\u4e00') + node_pairs[0])
                             node2 = chr(ord(u'\u4e00') + node_pairs[1])
                             edge_list = self._mask_edge(ele.copy("deepcopy"), node1, node2, edge_list)
                             if len(edge_list) <= MIN_EDGES_FOR_MASKING:
+                                logger.debug(f"Tree {j}: Reached minimum edges ({len(edge_list)}). Stopping masking.")
                                 break
+                        logger.debug(f"Tree {j}: Remaining edges after masking: {len(edge_list)}")
 
                     # Rebuild lists based on surviving edges
                     filtered_e0 = []
@@ -621,6 +638,9 @@ class FusangTreeBuilder:
             # Keep top beam_size candidates
             candidate_tree_beam.sort(key=lambda k: -k['tree_score'])
             candidate_tree_beam = candidate_tree_beam[0:self.beam_size]
+            
+            if candidate_tree_beam:
+                logger.debug(f"Taxon {i} added. Best tree score: {candidate_tree_beam[0]['tree_score']:.4f}")
 
             # Update beam for next iteration
             optim_tree_beam = []
@@ -927,6 +947,7 @@ def load_dl_model(len_of_msa, sequence_type, branch_model):
     branch_suffix = branch_model_map.get(branch_model, 'G')
     model_filename = f'{seq_prefix}{model_num}{branch_suffix}.h5'
     model_path = script_dir / 'model' / model_filename
+    logger.info(f"Loading model from {model_path}...")
     dl_model.load_weights(filepath=str(model_path))
 
     return dl_model, window_size

@@ -266,7 +266,6 @@ def judge_tree_score(tree, quart_distribution, new_addition_taxa, dic_for_leave_
     return total_quart_score
 
 
-
 def get_node_dist_matrix(tree):
     """
     Calculate pairwise distances between all leaves in the tree.
@@ -278,7 +277,7 @@ def get_node_dist_matrix(tree):
     leaf_names = [l.name for l in leaves]
     n_leaves = len(leaves)
     leaf_to_idx = {l.name: i for i, l in enumerate(leaves)}
-    
+
     # Build adjacency graph
     adj = {}
     for n in tree.traverse():
@@ -291,13 +290,13 @@ def get_node_dist_matrix(tree):
             adj[n].append(c)
             if c not in adj: adj[c] = []
             adj[c].append(n)
-            
+
     # Dedup
     for n in adj:
         adj[n] = list(set(adj[n]))
-        
+
     dists = np.zeros((n_leaves, n_leaves), dtype=int)
-    
+
     # BFS from each leaf
     for i, start_node in enumerate(leaves):
         visited = {start_node: 0}
@@ -307,45 +306,45 @@ def get_node_dist_matrix(tree):
             curr = queue[idx]
             idx += 1
             d = visited[curr]
-            
+
             if curr.is_leaf() and curr != start_node:
                 if curr.name in leaf_to_idx:
                     j = leaf_to_idx[curr.name]
                     dists[i, j] = d
-            
+
             for nb in adj[curr]:
                 if nb not in visited:
                     visited[nb] = d + 1
                     queue.append(nb)
-                    
+
     return dists, leaf_names
 
-def fast_judge_tree_score(base_dists, new_node_dists, leaf_names, new_taxon_name, 
+def fast_judge_tree_score(base_dists, new_node_dists, leaf_names, new_taxon_name,
                           current_quartets, dic_for_leave_node_comb_name):
     """
     Vectorized calculation of tree score.
     """
     n = len(leaf_names)
     total_score = 0
-    
+
     # Iterate all triplets
     triplets = list(combinations(range(n), 3))
-    
+
     for idx_a, idx_b, idx_c in triplets:
         name_a = leaf_names[idx_a]
         name_b = leaf_names[idx_b]
         name_c = leaf_names[idx_c]
-        
+
         # quartet key
         quart_names = sorted([name_a, name_b, name_c, new_taxon_name])
         quart_key = "".join(quart_names)
-        
+
         # Get topology ID from dict
         if quart_key not in dic_for_leave_node_comb_name:
             continue
         quart_id = dic_for_leave_node_comb_name[quart_key]
         probs = current_quartets[quart_id]
-        
+
         # Calculate sums for 3 splits
         d_ab = base_dists[idx_a, idx_b]
         d_ac = base_dists[idx_a, idx_c]
@@ -353,11 +352,11 @@ def fast_judge_tree_score(base_dists, new_node_dists, leaf_names, new_taxon_name
         d_ax = new_node_dists[idx_a]
         d_bx = new_node_dists[idx_b]
         d_cx = new_node_dists[idx_c]
-        
+
         S1 = d_ab + d_cx
         S2 = d_ac + d_bx
         S3 = d_bc + d_ax
-        
+
         best_split = -1
         # Determine winning split
         if S1 < S2 and S1 < S3:
@@ -384,9 +383,9 @@ def fast_judge_tree_score(base_dists, new_node_dists, leaf_names, new_taxon_name
             if pair == {0, 1} or pair == {2, 3}: best_split = 0
             elif pair == {0, 2} or pair == {1, 3}: best_split = 1
             else: best_split = 2
-            
+
         total_score += np.log(probs[best_split] + EPSILON)
-        
+
     return total_score
 
 
@@ -411,9 +410,9 @@ def get_modify_tree(tmp_tree, edge_0, edge_1, new_add_node_name):
 
 
 def search_this_branch(tmp_tree, edge_0, edge_1, current_quartets, current_leave_node_name, queue, dic_for_leave_node_comb_name, base_dists, new_node_dists, leaf_names):
-    
+
     tmp_tree_score = fast_judge_tree_score(base_dists, new_node_dists, leaf_names, current_leave_node_name, current_quartets, dic_for_leave_node_comb_name)
-    
+
     modify_tree = get_modify_tree(tmp_tree, edge_0, edge_1, current_leave_node_name)
     modify_tree.resolve_polytomy(recursive=True)
     modify_tree.unroot()
@@ -543,11 +542,11 @@ def gen_phylogenetic_tree(current_quartets, beam_size, taxa_num, leave_node_comb
                 continue
 
             optim_tree = ele.copy("newick")
-            
+
             # Pre-calculate distances once per tree
             base_dists, leaf_names_sorted = get_node_dist_matrix(optim_tree)
             leaf_name_to_idx = {name: i for i, name in enumerate(leaf_names_sorted)}
-            
+
             # Build adjacency for fast BFS
             adj = {}
             for n in optim_tree.traverse():
@@ -572,10 +571,10 @@ def gen_phylogenetic_tree(current_quartets, beam_size, taxa_num, leave_node_comb
                 edge_1 = node.name
                 if edge_0 == '' or edge_1 == '':
                     continue
-                
+
                 # BFS into subtree (node side)
                 dists_x = np.zeros(len(leaf_names_sorted))
-                queue = [(node, 1)] 
+                queue = [(node, 1)]
                 visited = {node, node.up}
                 idx = 0
                 while idx < len(queue):
@@ -587,7 +586,7 @@ def gen_phylogenetic_tree(current_quartets, beam_size, taxa_num, leave_node_comb
                         if nb not in visited:
                             visited.add(nb)
                             queue.append((nb, d + 1))
-                
+
                 # BFS into complement (node.up side)
                 queue = [(node.up, 1)]
                 idx = 0
@@ -600,7 +599,7 @@ def gen_phylogenetic_tree(current_quartets, beam_size, taxa_num, leave_node_comb
                         if nb not in visited:
                             visited.add(nb)
                             queue.append((nb, d + 1))
-                
+
                 edge_0_list.append(edge_0)
                 edge_1_list.append(edge_1)
                 new_node_dists_list.append(dists_x)
@@ -610,7 +609,7 @@ def gen_phylogenetic_tree(current_quartets, beam_size, taxa_num, leave_node_comb
                 # Map edge tuple to index to retrieve distances later
                 edge_tuple_to_idx = {(e0, e1): k for k, (e0, e1) in enumerate(zip(edge_0_list, edge_1_list))}
                 edge_list = [(edge_0_list[k], edge_1_list[k]) for k in range(len(edge_0_list))]
-                
+
                 mask_node_pairs = select_mask_node_pair(current_quartets, i, start_end_list, comb_of_id)
 
                 if mask_node_pairs is not None:
@@ -632,7 +631,7 @@ def gen_phylogenetic_tree(current_quartets, beam_size, taxa_num, leave_node_comb
                         filtered_e0.append(e0)
                         filtered_e1.append(e1)
                         filtered_dists.append(new_node_dists_list[idx])
-                
+
                 edge_0_list = filtered_e0
                 edge_1_list = filtered_e1
                 new_node_dists_list = filtered_dists

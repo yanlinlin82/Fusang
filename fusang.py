@@ -228,262 +228,413 @@ def get_current_topology_id(quart_key, cluster_1, cluster_2):
         sys.exit(1)
 
 
-def judge_tree_score(tree, quart_distribution, new_addition_taxa, dic_for_leave_node_comb_name):
+class FusangTreeBuilder:
     """
-    Calculate tree score based on quartet distribution.
-
-    Parameters:
-    tree: a candidate tree, can be any taxas
-    quart_distribution: the prob distribution of the topology of every 4-taxa
-    new_addition_taxa: newly added taxon name
-    dic_for_leave_node_comb_name: dictionary mapping quartet keys to indices
+    Handles phylogenetic tree construction from quartet scores using beam search.
     """
-    crt_tree = tree.copy("newick")
-    leaves = [ele.name for ele in crt_tree.get_leaves()]
-    total_quarts = list(combinations(leaves, 4))
-    quarts = [ele for ele in total_quarts if new_addition_taxa in ele]
+    def __init__(self, beam_size, taxa_num, use_masking=False, 
+                 start_end_list=None, comb_of_id=None, 
+                 max_processes=MAX_PROCESSES):
+        self.beam_size = beam_size
+        self.taxa_num = taxa_num
+        self.use_masking = use_masking
+        self.start_end_list = start_end_list
+        self.comb_of_id = comb_of_id
+        self.max_processes = max_processes
 
-    total_quart_score = 0
-
-    for quart in quarts:
-        crt_tree = tree.copy("newick")
-        try:
-            crt_tree.prune(list(quart))
-        except Exception:
-            logger.error('Error of pruning 4 taxa from current tree, the current tree is:\n' + str(crt_tree))
-            sys.exit(1)
-
-        quart_key = "".join(sorted(list(quart)))
-        quart_topo_id = dic_for_leave_node_comb_name[quart_key]
-        quart_topo_distribution = quart_distribution[quart_topo_id]
-
-        # judge current tree belongs to which topology
-        tmp = re.findall(r"\([\s\S]\,[\s\S]\)", crt_tree.write(format=9))[0]
-        topology_id = get_current_topology_id(quart_key, tmp[1], tmp[3])
-
-        total_quart_score += np.log(quart_topo_distribution[topology_id] + EPSILON)
-
-    return total_quart_score
-
-
-def get_node_dist_matrix(tree):
-    """
-    Calculate pairwise distances between all leaves in the tree.
-    Returns:
-        dists: NxN numpy array of distances (number of edges)
-        leaf_names: list of leaf names corresponding to indices
-    """
-    leaves = [node for node in tree.get_leaves()]
-    leaf_names = [l.name for l in leaves]
-    n_leaves = len(leaves)
-    leaf_to_idx = {l.name: i for i, l in enumerate(leaves)}
-
-    # Build adjacency graph
-    adj = {}
-    for n in tree.traverse():
-        if n not in adj: adj[n] = []
-        if n.up:
-            adj[n].append(n.up)
-            if n.up not in adj: adj[n.up] = []
-            adj[n.up].append(n)
-        for c in n.children:
-            adj[n].append(c)
-            if c not in adj: adj[c] = []
-            adj[c].append(n)
-
-    # Dedup
-    for n in adj:
-        adj[n] = list(set(adj[n]))
-
-    dists = np.zeros((n_leaves, n_leaves), dtype=int)
-
-    # BFS from each leaf
-    for i, start_node in enumerate(leaves):
-        visited = {start_node: 0}
-        queue = [start_node]
-        idx = 0
-        while idx < len(queue):
-            curr = queue[idx]
-            idx += 1
-            d = visited[curr]
-
-            if curr.is_leaf() and curr != start_node:
-                if curr.name in leaf_to_idx:
-                    j = leaf_to_idx[curr.name]
-                    dists[i, j] = d
-
-            for nb in adj[curr]:
-                if nb not in visited:
-                    visited[nb] = d + 1
-                    queue.append(nb)
-
-    return dists, leaf_names
-
-def fast_judge_tree_score(base_dists, new_node_dists, leaf_names, new_taxon_name,
-                          current_quartets, dic_for_leave_node_comb_name):
-    """
-    Vectorized calculation of tree score.
-    """
-    n = len(leaf_names)
-    total_score = 0
-
-    # Iterate all triplets
-    triplets = list(combinations(range(n), 3))
-
-    for idx_a, idx_b, idx_c in triplets:
-        name_a = leaf_names[idx_a]
-        name_b = leaf_names[idx_b]
-        name_c = leaf_names[idx_c]
-
-        # quartet key
-        quart_names = sorted([name_a, name_b, name_c, new_taxon_name])
-        quart_key = "".join(quart_names)
-
-        # Get topology ID from dict
-        if quart_key not in dic_for_leave_node_comb_name:
-            continue
-        quart_id = dic_for_leave_node_comb_name[quart_key]
-        probs = current_quartets[quart_id]
-
-        # Calculate sums for 3 splits
-        d_ab = base_dists[idx_a, idx_b]
-        d_ac = base_dists[idx_a, idx_c]
-        d_bc = base_dists[idx_b, idx_c]
-        d_ax = new_node_dists[idx_a]
-        d_bx = new_node_dists[idx_b]
-        d_cx = new_node_dists[idx_c]
-
-        S1 = d_ab + d_cx
-        S2 = d_ac + d_bx
-        S3 = d_bc + d_ax
-
-        best_split = -1
-        # Determine winning split
-        if S1 < S2 and S1 < S3:
-            # ab | cX
-            pos_a = quart_names.index(name_a)
-            pos_b = quart_names.index(name_b)
-            pair = {pos_a, pos_b}
-            if pair == {0, 1} or pair == {2, 3}: best_split = 0
-            elif pair == {0, 2} or pair == {1, 3}: best_split = 1
-            else: best_split = 2
-        elif S2 < S1 and S2 < S3:
-            # ac | bX
-            pos_a = quart_names.index(name_a)
-            pos_c = quart_names.index(name_c)
-            pair = {pos_a, pos_c}
-            if pair == {0, 1} or pair == {2, 3}: best_split = 0
-            elif pair == {0, 2} or pair == {1, 3}: best_split = 1
-            else: best_split = 2
+    @staticmethod
+    def get_modify_tree(tmp_tree, edge_0, edge_1, new_add_node_name):
+        """
+        Add a new leave node between edge_0 and edge_1.
+        Default: edge_0 is the parent node of edge_1.
+        """
+        modify_tree = tmp_tree.copy("newick")
+        if edge_0 != edge_1:
+            new_node = Tree()
+            new_node.add_child(name=new_add_node_name)
+            detached_node = modify_tree & edge_1
+            detached_node.detach()
+            inserted_node = modify_tree & edge_0
+            inserted_node.add_child(new_node)
+            new_node.add_child(detached_node)
         else:
-            # bc | aX
-            pos_b = quart_names.index(name_b)
-            pos_c = quart_names.index(name_c)
-            pair = {pos_b, pos_c}
-            if pair == {0, 1} or pair == {2, 3}: best_split = 0
-            elif pair == {0, 2} or pair == {1, 3}: best_split = 1
-            else: best_split = 2
+            modify_tree.add_child(name=new_add_node_name)
 
-        total_score += np.log(probs[best_split] + EPSILON)
+        return modify_tree
 
-    return total_score
+    @staticmethod
+    def get_node_dist_matrix(tree):
+        """
+        Calculate pairwise distances between all leaves in the tree.
+        Returns:
+            dists: NxN numpy array of distances (number of edges)
+            leaf_names: list of leaf names corresponding to indices
+        """
+        leaves = [node for node in tree.get_leaves()]
+        leaf_names = [l.name for l in leaves]
+        n_leaves = len(leaves)
+        leaf_to_idx = {l.name: i for i, l in enumerate(leaves)}
+        
+        # Build adjacency graph
+        adj = {}
+        for n in tree.traverse():
+            if n not in adj: adj[n] = []
+            if n.up:
+                adj[n].append(n.up)
+                if n.up not in adj: adj[n.up] = []
+                adj[n.up].append(n)
+            for c in n.children:
+                adj[n].append(c)
+                if c not in adj: adj[c] = []
+                adj[c].append(n)
+                
+        # Dedup
+        for n in adj:
+            adj[n] = list(set(adj[n]))
+            
+        dists = np.zeros((n_leaves, n_leaves), dtype=int)
+        
+        # BFS from each leaf
+        for i, start_node in enumerate(leaves):
+            visited = {start_node: 0}
+            queue = [start_node]
+            idx = 0
+            while idx < len(queue):
+                curr = queue[idx]
+                idx += 1
+                d = visited[curr]
+                
+                if curr.is_leaf() and curr != start_node:
+                    if curr.name in leaf_to_idx:
+                        j = leaf_to_idx[curr.name]
+                        dists[i, j] = d
+                
+                for nb in adj[curr]:
+                    if nb not in visited:
+                        visited[nb] = d + 1
+                        queue.append(nb)
+                        
+        return dists, leaf_names
 
+    @staticmethod
+    def fast_judge_tree_score(base_dists, new_node_dists, leaf_names, new_taxon_name, 
+                            current_quartets, dic_for_leave_node_comb_name):
+        """
+        Vectorized calculation of tree score.
+        """
+        n = len(leaf_names)
+        total_score = 0
+        
+        # Iterate all triplets
+        triplets = list(combinations(range(n), 3))
+        
+        for idx_a, idx_b, idx_c in triplets:
+            name_a = leaf_names[idx_a]
+            name_b = leaf_names[idx_b]
+            name_c = leaf_names[idx_c]
+            
+            # quartet key
+            quart_names = sorted([name_a, name_b, name_c, new_taxon_name])
+            quart_key = "".join(quart_names)
+            
+            # Get topology ID from dict
+            if quart_key not in dic_for_leave_node_comb_name:
+                continue
+            quart_id = dic_for_leave_node_comb_name[quart_key]
+            probs = current_quartets[quart_id]
+            
+            # Calculate sums for 3 splits
+            d_ab = base_dists[idx_a, idx_b]
+            d_ac = base_dists[idx_a, idx_c]
+            d_bc = base_dists[idx_b, idx_c]
+            d_ax = new_node_dists[idx_a]
+            d_bx = new_node_dists[idx_b]
+            d_cx = new_node_dists[idx_c]
+            
+            S1 = d_ab + d_cx
+            S2 = d_ac + d_bx
+            S3 = d_bc + d_ax
+            
+            best_split = -1
+            # Determine winning split
+            if S1 < S2 and S1 < S3:
+                # ab | cX
+                pos_a = quart_names.index(name_a)
+                pos_b = quart_names.index(name_b)
+                pair = {pos_a, pos_b}
+                if pair == {0, 1} or pair == {2, 3}: best_split = 0
+                elif pair == {0, 2} or pair == {1, 3}: best_split = 1
+                else: best_split = 2
+            elif S2 < S1 and S2 < S3:
+                # ac | bX
+                pos_a = quart_names.index(name_a)
+                pos_c = quart_names.index(name_c)
+                pair = {pos_a, pos_c}
+                if pair == {0, 1} or pair == {2, 3}: best_split = 0
+                elif pair == {0, 2} or pair == {1, 3}: best_split = 1
+                else: best_split = 2
+            else:
+                # bc | aX
+                pos_b = quart_names.index(name_b)
+                pos_c = quart_names.index(name_c)
+                pair = {pos_b, pos_c}
+                if pair == {0, 1} or pair == {2, 3}: best_split = 0
+                elif pair == {0, 2} or pair == {1, 3}: best_split = 1
+                else: best_split = 2
+                
+            total_score += np.log(probs[best_split] + EPSILON)
+            
+        return total_score
 
-def get_modify_tree(tmp_tree, edge_0, edge_1, new_add_node_name):
-    """
-    Add a new leave node between edge_0 and edge_1.
-    Default: edge_0 is the parent node of edge_1.
-    """
-    modify_tree = tmp_tree.copy("newick")
-    if edge_0 != edge_1:
-        new_node = Tree()
-        new_node.add_child(name=new_add_node_name)
-        detached_node = modify_tree & edge_1
-        detached_node.detach()
-        inserted_node = modify_tree & edge_0
-        inserted_node.add_child(new_node)
-        new_node.add_child(detached_node)
-    else:
-        modify_tree.add_child(name=new_add_node_name)
+    @staticmethod
+    def _search_branch_worker(tmp_tree, edge_0, edge_1, current_quartets, current_leave_node_name, queue, dic_for_leave_node_comb_name, base_dists, new_node_dists, leaf_names):
+        
+        tmp_tree_score = FusangTreeBuilder.fast_judge_tree_score(base_dists, new_node_dists, leaf_names, current_leave_node_name, current_quartets, dic_for_leave_node_comb_name)
+        
+        modify_tree = FusangTreeBuilder.get_modify_tree(tmp_tree, edge_0, edge_1, current_leave_node_name)
+        modify_tree.resolve_polytomy(recursive=True)
+        modify_tree.unroot()
 
-    return modify_tree
+        dic = {}
+        dic['tree'] = modify_tree
+        dic['score'] = tmp_tree_score
+        queue.put(dic)
 
+    def _select_mask_node_pair(self, dl_predict, new_add_taxa):
+        """Select node pairs to mask based on prediction confidence."""
+        if new_add_taxa <= MIN_TAXA_FOR_MASKING - 1:
+            return None
 
-def search_this_branch(tmp_tree, edge_0, edge_1, current_quartets, current_leave_node_name, queue, dic_for_leave_node_comb_name, base_dists, new_node_dists, leaf_names):
+        mask_node_pair = []
+        current_start = self.start_end_list[new_add_taxa][0]
+        current_end = self.start_end_list[new_add_taxa][1]
+        select_distribution = dl_predict[current_start:current_end + 1]
+        if np.max(select_distribution) < 0.90:
+            return None
 
-    tmp_tree_score = fast_judge_tree_score(base_dists, new_node_dists, leaf_names, current_leave_node_name, current_quartets, dic_for_leave_node_comb_name)
+        x, y = nlargest_indices(select_distribution, int(max(10, 0.01 * len(select_distribution))))
 
-    modify_tree = get_modify_tree(tmp_tree, edge_0, edge_1, current_leave_node_name)
-    modify_tree.resolve_polytomy(recursive=True)
-    modify_tree.unroot()
+        for i in range(len(x)):
+            idx = x[i]
+            topology_value = y[i]
+            quartet_comb = self.comb_of_id[current_start + idx]
 
-    dic = {}
-    dic['tree'] = modify_tree
-    dic['score'] = tmp_tree_score
-    queue.put(dic)
-    queue.put(dic)
+            if topology_value == 0:
+                mask_node_pair.append((quartet_comb[0], quartet_comb[1]))
+            elif topology_value == 1:
+                mask_node_pair.append((quartet_comb[0], quartet_comb[2]))
+            elif topology_value == 2:
+                mask_node_pair.append((quartet_comb[1], quartet_comb[2]))
 
+        return mask_node_pair
 
-# ============================================================================
-# Tree Search and Masking Functions
-# ============================================================================
+    def _mask_edge(self, tree, node1, node2, edge_list):
+        """Mask edge between node1 and node2."""
+        if len(edge_list) <= MIN_EDGES_FOR_MASKING:
+            return edge_list
 
-def select_mask_node_pair(dl_predict, new_add_taxa, start_end_list, comb_of_id):
-    """Select node pairs to mask based on prediction confidence."""
-    if new_add_taxa <= MIN_TAXA_FOR_MASKING - 1:
-        return None
+        ancestor_name = tree.get_common_ancestor(node1, node2).name
+        remove_edge = []
 
-    mask_node_pair = []
-    current_start = start_end_list[new_add_taxa][0]
-    current_end = start_end_list[new_add_taxa][1]
-    select_distribution = dl_predict[current_start:current_end + 1]
-    if np.max(select_distribution) < 0.90:
-        return None
+        for node_name in [node1, node2]:
+            node = tree.search_nodes(name=node_name)[0]
+            while node:
+                if node.name == ancestor_name:
+                    break
 
-    x, y = nlargest_indices(select_distribution, int(max(10, 0.01 * len(select_distribution))))
+                edge_0 = node.up.name
+                edge_1 = node.name
 
-    for i in range(len(x)):
-        idx = x[i]
-        topology_value = y[i]
-        quartet_comb = comb_of_id[current_start + idx]
+                if len(remove_edge) >= len(edge_list) - MIN_EDGES_FOR_MASKING:
+                    break
+                remove_edge.append((edge_0, edge_1))
+                node = node.up
 
-        if topology_value == 0:
-            mask_node_pair.append((quartet_comb[0], quartet_comb[1]))
-        elif topology_value == 1:
-            mask_node_pair.append((quartet_comb[0], quartet_comb[2]))
-        elif topology_value == 2:
-            mask_node_pair.append((quartet_comb[1], quartet_comb[2]))
+        for ele in remove_edge:
+            if ele in edge_list:
+                edge_list.remove(ele)
 
-    return mask_node_pair
-
-
-def mask_edge(tree, node1, node2, edge_list):
-    """Mask edge between node1 and node2."""
-    if len(edge_list) <= MIN_EDGES_FOR_MASKING:
         return edge_list
 
-    ancestor_name = tree.get_common_ancestor(node1, node2).name
-    remove_edge = []
+    def build(self, current_quartets, leave_node_comb_name,
+              dic_for_leave_node_comb_name, internal_node_name_pool):
+        """
+        Search the phylogenetic tree having highest score using beam search.
+        """
+        current_leave_node_name = [chr(ord(u'\u4e00') + i) for i in range(self.taxa_num)]
+        candidate_tree_beam = []
+        quartet_id = leave_node_comb_name[0]
 
-    for node_name in [node1, node2]:
-        node = tree.search_nodes(name=node_name)[0]
-        while node:
-            if node.name == ancestor_name:
-                break
+        # Initialize with three possible topologies for first quartet
+        for _label in [0, 1, 2]:
+            if _label == 0:
+                label_id = "".join([quartet_id[0], quartet_id[1], quartet_id[2], quartet_id[3]])
+            elif _label == 1:
+                label_id = "".join([quartet_id[0], quartet_id[2], quartet_id[1], quartet_id[3]])
+            elif _label == 2:
+                label_id = "".join([quartet_id[0], quartet_id[3], quartet_id[1], quartet_id[2]])
 
-            edge_0 = node.up.name
-            edge_1 = node.name
+            _tree = tree_from_quartet(label_id)
+            _tree.unroot()
+            _tree_score = current_quartets[0, _label]
+            tmp_tree_dict = {'Tree': _tree, 'tree_score': _tree_score}
+            candidate_tree_beam.append(tmp_tree_dict)
+            candidate_tree_beam.sort(key=lambda k: -k['tree_score'])
 
-            if len(remove_edge) >= len(edge_list) - MIN_EDGES_FOR_MASKING:
-                break
-            remove_edge.append((edge_0, edge_1))
-            node = node.up
+        idx_for_internal_node_name_pool = 0
+        current_tree_score_beam = []
+        optim_tree_beam = []
 
-    for ele in remove_edge:
-        if ele in edge_list:
-            edge_list.remove(ele)
+        # In the start point set beam size equal to 3
+        for i in range(3):
+            current_tree_score_beam.append(candidate_tree_beam[i]['tree_score'])
+            optim_tree_beam.append(candidate_tree_beam[i]['Tree'])
 
-    return edge_list
+        # Add remaining taxa one by one
+        for i in range(4, len(current_leave_node_name)):
+            candidate_tree_beam = []
+
+            for j in range(len(optim_tree_beam)):
+                ele = optim_tree_beam[j]
+                if ele is None:
+                    continue
+
+                optim_tree = ele.copy("newick")
+                
+                # Pre-calculate distances once per tree
+                base_dists, leaf_names_sorted = FusangTreeBuilder.get_node_dist_matrix(optim_tree)
+                leaf_name_to_idx = {name: k for k, name in enumerate(leaf_names_sorted)}
+                
+                # Build adjacency for fast BFS
+                adj = {}
+                for n in optim_tree.traverse():
+                    if n not in adj: adj[n] = []
+                    if n.up:
+                        adj[n].append(n.up)
+                        if n.up not in adj: adj[n.up] = []
+                        adj[n.up].append(n)
+                    for c in n.children:
+                        adj[n].append(c)
+                        if c not in adj: adj[c] = []
+                        adj[c].append(n)
+
+                edge_0_list = []
+                edge_1_list = []
+                new_node_dists_list = []
+
+                # Collect all edges and compute X-distances
+                for node in optim_tree.iter_descendants():
+                    if not node.up: continue
+                    edge_0 = node.up.name
+                    edge_1 = node.name
+                    if edge_0 == '' or edge_1 == '':
+                        continue
+                    
+                    # BFS into subtree (node side)
+                    dists_x = np.zeros(len(leaf_names_sorted))
+                    queue = [(node, 1)] 
+                    visited = {node, node.up}
+                    idx = 0
+                    while idx < len(queue):
+                        curr, d = queue[idx]
+                        idx += 1
+                        if curr.is_leaf() and curr.name in leaf_name_to_idx:
+                            dists_x[leaf_name_to_idx[curr.name]] = d + 1
+                        for nb in adj[curr]:
+                            if nb not in visited:
+                                visited.add(nb)
+                                queue.append((nb, d + 1))
+                    
+                    # BFS into complement (node.up side)
+                    queue = [(node.up, 1)]
+                    idx = 0
+                    while idx < len(queue):
+                        curr, d = queue[idx]
+                        idx += 1
+                        if curr.is_leaf() and curr.name in leaf_name_to_idx:
+                            dists_x[leaf_name_to_idx[curr.name]] = d + 1
+                        for nb in adj[curr]:
+                            if nb not in visited:
+                                visited.add(nb)
+                                queue.append((nb, d + 1))
+                    
+                    edge_0_list.append(edge_0)
+                    edge_1_list.append(edge_1)
+                    new_node_dists_list.append(dists_x)
+
+                # Apply masking if enabled
+                if self.use_masking and self.start_end_list is not None and self.comb_of_id is not None:
+                    # Map edge tuple to index to retrieve distances later
+                    edge_tuple_to_idx = {(e0, e1): k for k, (e0, e1) in enumerate(zip(edge_0_list, edge_1_list))}
+                    edge_list = [(edge_0_list[k], edge_1_list[k]) for k in range(len(edge_0_list))]
+                    
+                    mask_node_pairs = self._select_mask_node_pair(current_quartets, i)
+
+                    if mask_node_pairs is not None:
+                        mask_node_pairs = list(set(mask_node_pairs))
+                        for node_pairs in mask_node_pairs:
+                            node1 = chr(ord(u'\u4e00') + node_pairs[0])
+                            node2 = chr(ord(u'\u4e00') + node_pairs[1])
+                            edge_list = self._mask_edge(ele.copy("deepcopy"), node1, node2, edge_list)
+                            if len(edge_list) <= MIN_EDGES_FOR_MASKING:
+                                break
+
+                    # Rebuild lists based on surviving edges
+                    filtered_e0 = []
+                    filtered_e1 = []
+                    filtered_dists = []
+                    for e0, e1 in edge_list:
+                        if (e0, e1) in edge_tuple_to_idx:
+                            idx = edge_tuple_to_idx[(e0, e1)]
+                            filtered_e0.append(e0)
+                            filtered_e1.append(e1)
+                            filtered_dists.append(new_node_dists_list[idx])
+                    
+                    edge_0_list = filtered_e0
+                    edge_1_list = filtered_e1
+                    new_node_dists_list = filtered_dists
+
+                # Search all branches in parallel
+                queue = multiprocessing.Manager().Queue()
+                para_list = [(optim_tree, edge_0_list[k], edge_1_list[k], current_quartets,
+                            current_leave_node_name[i], queue, dic_for_leave_node_comb_name,
+                            base_dists, new_node_dists_list[k], leaf_names_sorted)
+                            for k in range(len(edge_0_list))]
+
+                if self.use_masking:
+                    process_num = min(self.max_processes, len(edge_0_list))
+                else:
+                    process_num = min(self.max_processes, 2 * i + MIN_PROCESSES)
+                
+                pool = Pool(process_num)
+                pool.starmap(FusangTreeBuilder._search_branch_worker, para_list)
+                pool.close()
+                pool.join()
+
+                # Collect results
+                while not queue.empty():
+                    tmp_dic = queue.get()
+                    tmp_tree_dict = {'Tree': tmp_dic['tree'],
+                                'tree_score': tmp_dic['score'] + current_tree_score_beam[j]}
+                    candidate_tree_beam.append(tmp_tree_dict)
+
+            # Keep top beam_size candidates
+            candidate_tree_beam.sort(key=lambda k: -k['tree_score'])
+            candidate_tree_beam = candidate_tree_beam[0:self.beam_size]
+
+            # Update beam for next iteration
+            optim_tree_beam = []
+            current_tree_score_beam = []
+            for ele in candidate_tree_beam:
+                crt_tree = ele['Tree'].copy("newick")
+                for node in crt_tree.traverse("preorder"):
+                    if node.name == '':
+                        node.name = str(internal_node_name_pool[idx_for_internal_node_name_pool])
+                        idx_for_internal_node_name_pool += 1
+                optim_tree_beam.append(crt_tree)
+                current_tree_score_beam.append(ele['tree_score'])
+
+        return optim_tree_beam[0].write(format=9)
 
 
 def gen_phylogenetic_tree(current_quartets, beam_size, taxa_num, leave_node_comb_name,
@@ -491,191 +642,10 @@ def gen_phylogenetic_tree(current_quartets, beam_size, taxa_num, leave_node_comb
                           use_masking=False, start_end_list=None, comb_of_id=None):
     """
     Search the phylogenetic tree having highest score using beam search.
-
-    Parameters:
-    current_quartets: quartet distribution predictions
-    beam_size: size of beam for search
-    taxa_num: number of taxa
-    leave_node_comb_name: list of quartet combinations
-    dic_for_leave_node_comb_name: dictionary mapping quartet keys to indices
-    internal_node_name_pool: pool of names for internal nodes
-    use_masking: whether to use edge masking optimization
-    start_end_list: list of start/end indices for masking
-    comb_of_id: list of quartet ID combinations
+    (Wrapper around FusangTreeBuilder)
     """
-    current_leave_node_name = [chr(ord(u'\u4e00') + i) for i in range(taxa_num)]
-    candidate_tree_beam = []
-    quartet_id = leave_node_comb_name[0]
-
-    # Initialize with three possible topologies for first quartet
-    for _label in [0, 1, 2]:
-        if _label == 0:
-            label_id = "".join([quartet_id[0], quartet_id[1], quartet_id[2], quartet_id[3]])
-        elif _label == 1:
-            label_id = "".join([quartet_id[0], quartet_id[2], quartet_id[1], quartet_id[3]])
-        elif _label == 2:
-            label_id = "".join([quartet_id[0], quartet_id[3], quartet_id[1], quartet_id[2]])
-
-        _tree = tree_from_quartet(label_id)
-        _tree.unroot()
-        _tree_score = current_quartets[0, _label]
-        tmp_tree_dict = {'Tree': _tree, 'tree_score': _tree_score}
-        candidate_tree_beam.append(tmp_tree_dict)
-        candidate_tree_beam.sort(key=lambda k: -k['tree_score'])
-
-    idx_for_internal_node_name_pool = 0
-    current_tree_score_beam = []
-    optim_tree_beam = []
-
-    # In the start point set beam size equal to 3
-    for i in range(3):
-        current_tree_score_beam.append(candidate_tree_beam[i]['tree_score'])
-        optim_tree_beam.append(candidate_tree_beam[i]['Tree'])
-
-    # Add remaining taxa one by one
-    for i in range(4, len(current_leave_node_name)):
-        candidate_tree_beam = []
-
-        for j in range(len(optim_tree_beam)):
-            ele = optim_tree_beam[j]
-            if ele is None:
-                continue
-
-            optim_tree = ele.copy("newick")
-
-            # Pre-calculate distances once per tree
-            base_dists, leaf_names_sorted = get_node_dist_matrix(optim_tree)
-            leaf_name_to_idx = {name: i for i, name in enumerate(leaf_names_sorted)}
-
-            # Build adjacency for fast BFS
-            adj = {}
-            for n in optim_tree.traverse():
-                if n not in adj: adj[n] = []
-                if n.up:
-                    adj[n].append(n.up)
-                    if n.up not in adj: adj[n.up] = []
-                    adj[n.up].append(n)
-                for c in n.children:
-                    adj[n].append(c)
-                    if c not in adj: adj[c] = []
-                    adj[c].append(n)
-
-            edge_0_list = []
-            edge_1_list = []
-            new_node_dists_list = []
-
-            # Collect all edges and compute X-distances
-            for node in optim_tree.iter_descendants():
-                if not node.up: continue
-                edge_0 = node.up.name
-                edge_1 = node.name
-                if edge_0 == '' or edge_1 == '':
-                    continue
-
-                # BFS into subtree (node side)
-                dists_x = np.zeros(len(leaf_names_sorted))
-                queue = [(node, 1)]
-                visited = {node, node.up}
-                idx = 0
-                while idx < len(queue):
-                    curr, d = queue[idx]
-                    idx += 1
-                    if curr.is_leaf() and curr.name in leaf_name_to_idx:
-                        dists_x[leaf_name_to_idx[curr.name]] = d + 1
-                    for nb in adj[curr]:
-                        if nb not in visited:
-                            visited.add(nb)
-                            queue.append((nb, d + 1))
-
-                # BFS into complement (node.up side)
-                queue = [(node.up, 1)]
-                idx = 0
-                while idx < len(queue):
-                    curr, d = queue[idx]
-                    idx += 1
-                    if curr.is_leaf() and curr.name in leaf_name_to_idx:
-                        dists_x[leaf_name_to_idx[curr.name]] = d + 1
-                    for nb in adj[curr]:
-                        if nb not in visited:
-                            visited.add(nb)
-                            queue.append((nb, d + 1))
-
-                edge_0_list.append(edge_0)
-                edge_1_list.append(edge_1)
-                new_node_dists_list.append(dists_x)
-
-            # Apply masking if enabled
-            if use_masking and start_end_list is not None and comb_of_id is not None:
-                # Map edge tuple to index to retrieve distances later
-                edge_tuple_to_idx = {(e0, e1): k for k, (e0, e1) in enumerate(zip(edge_0_list, edge_1_list))}
-                edge_list = [(edge_0_list[k], edge_1_list[k]) for k in range(len(edge_0_list))]
-
-                mask_node_pairs = select_mask_node_pair(current_quartets, i, start_end_list, comb_of_id)
-
-                if mask_node_pairs is not None:
-                    mask_node_pairs = list(set(mask_node_pairs))
-                    for node_pairs in mask_node_pairs:
-                        node1 = chr(ord(u'\u4e00') + node_pairs[0])
-                        node2 = chr(ord(u'\u4e00') + node_pairs[1])
-                        edge_list = mask_edge(ele.copy("deepcopy"), node1, node2, edge_list)
-                        if len(edge_list) <= MIN_EDGES_FOR_MASKING:
-                            break
-
-                # Rebuild lists based on surviving edges
-                filtered_e0 = []
-                filtered_e1 = []
-                filtered_dists = []
-                for e0, e1 in edge_list:
-                    if (e0, e1) in edge_tuple_to_idx:
-                        idx = edge_tuple_to_idx[(e0, e1)]
-                        filtered_e0.append(e0)
-                        filtered_e1.append(e1)
-                        filtered_dists.append(new_node_dists_list[idx])
-
-                edge_0_list = filtered_e0
-                edge_1_list = filtered_e1
-                new_node_dists_list = filtered_dists
-
-            # Search all branches in parallel
-            queue = multiprocessing.Manager().Queue()
-            para_list = [(optim_tree, edge_0_list[k], edge_1_list[k], current_quartets,
-                         current_leave_node_name[i], queue, dic_for_leave_node_comb_name,
-                         base_dists, new_node_dists_list[k], leaf_names_sorted)
-                        for k in range(len(edge_0_list))]
-
-            if use_masking:
-                process_num = min(MAX_PROCESSES, len(edge_0_list))
-            else:
-                process_num = min(MAX_PROCESSES, 2 * i + MIN_PROCESSES)
-            pool = Pool(process_num)
-            pool.starmap(search_this_branch, para_list)
-            pool.close()
-            pool.join()
-
-            # Collect results
-            while not queue.empty():
-                tmp_dic = queue.get()
-                tmp_tree_dict = {'Tree': tmp_dic['tree'],
-                               'tree_score': tmp_dic['score'] + current_tree_score_beam[j]}
-                candidate_tree_beam.append(tmp_tree_dict)
-
-        # Keep top beam_size candidates
-        candidate_tree_beam.sort(key=lambda k: -k['tree_score'])
-        candidate_tree_beam = candidate_tree_beam[0:beam_size]
-
-        # Update beam for next iteration
-        optim_tree_beam = []
-        current_tree_score_beam = []
-        for ele in candidate_tree_beam:
-            crt_tree = ele['Tree'].copy("newick")
-            for node in crt_tree.traverse("preorder"):
-                if node.name == '':
-                    node.name = str(internal_node_name_pool[idx_for_internal_node_name_pool])
-                    idx_for_internal_node_name_pool += 1
-            optim_tree_beam.append(crt_tree)
-            current_tree_score_beam.append(ele['tree_score'])
-
-    return optim_tree_beam[0].write(format=9)
+    builder = FusangTreeBuilder(beam_size, taxa_num, use_masking, start_end_list, comb_of_id)
+    return builder.build(current_quartets, leave_node_comb_name, dic_for_leave_node_comb_name, internal_node_name_pool)
 
 
 def transform_str(str_a, taxa_name, taxa_num):

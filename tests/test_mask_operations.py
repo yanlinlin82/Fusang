@@ -3,8 +3,7 @@ import numpy as np
 import pytest
 from ete3 import Tree
 from fusang import (
-    select_mask_node_pair,
-    mask_edge,
+    FusangTreeBuilder,
     MIN_TAXA_FOR_MASKING,
     MIN_EDGES_FOR_MASKING,
 )
@@ -20,7 +19,8 @@ class TestSelectMaskNodePair:
         start_end_list = [None, None, None, (0, 9)]
         comb_of_id = [(0, 1, 2, 3)] * 10
         
-        result = select_mask_node_pair(dl_predict, new_add_taxa, start_end_list, comb_of_id)
+        builder = FusangTreeBuilder(beam_size=5, taxa_num=10, start_end_list=start_end_list, comb_of_id=comb_of_id)
+        result = builder._select_mask_node_pair(dl_predict, new_add_taxa)
         assert result is None
 
     def test_low_confidence(self):
@@ -32,7 +32,8 @@ class TestSelectMaskNodePair:
         start_end_list = [None, None, None] + [(0, 9)] * 8  # Indices 3-10
         comb_of_id = [(0, 1, 2, 3)] * 10
         
-        result = select_mask_node_pair(dl_predict, new_add_taxa, start_end_list, comb_of_id)
+        builder = FusangTreeBuilder(beam_size=5, taxa_num=10, start_end_list=start_end_list, comb_of_id=comb_of_id)
+        result = builder._select_mask_node_pair(dl_predict, new_add_taxa)
         assert result is None
 
     def test_high_confidence(self):
@@ -45,7 +46,8 @@ class TestSelectMaskNodePair:
         start_end_list = [None, None, None] + [(0, 9)] * 8  # Indices 3-10
         comb_of_id = [(0, 1, 2, 3)] * 10
         
-        result = select_mask_node_pair(dl_predict, new_add_taxa, start_end_list, comb_of_id)
+        builder = FusangTreeBuilder(beam_size=5, taxa_num=10, start_end_list=start_end_list, comb_of_id=comb_of_id)
+        result = builder._select_mask_node_pair(dl_predict, new_add_taxa)
         
         if result is not None:
             assert isinstance(result, list)
@@ -60,7 +62,8 @@ class TestMaskEdge:
         tree = Tree("((A,B),(C,D));")
         edge_list = [(1, 2)]  # Less than MIN_EDGES_FOR_MASKING
         
-        result = mask_edge(tree, 'A', 'B', edge_list.copy())
+        builder = FusangTreeBuilder(beam_size=5, taxa_num=10)
+        result = builder._mask_edge(tree, 'A', 'B', edge_list.copy())
         assert result == edge_list
 
     def test_basic_masking(self):
@@ -75,7 +78,8 @@ class TestMaskEdge:
         
         if len(edge_list) > MIN_EDGES_FOR_MASKING:
             original_len = len(edge_list)
-            result = mask_edge(tree, 'A', 'B', edge_list.copy())
+            builder = FusangTreeBuilder(beam_size=5, taxa_num=10)
+            result = builder._mask_edge(tree, 'A', 'B', edge_list.copy())
             
             # Should have fewer edges if masking worked
             assert len(result) <= original_len
@@ -92,7 +96,8 @@ class TestMaskEdge:
                 edge_list.append((node.up.name, node.name))
         
         if len(edge_list) > MIN_EDGES_FOR_MASKING:
-            result = mask_edge(tree, 'A', 'C', edge_list.copy())
+            builder = FusangTreeBuilder(beam_size=5, taxa_num=10)
+            result = builder._mask_edge(tree, 'A', 'C', edge_list.copy())
             
             # Should remove edges on path to common ancestor
             assert len(result) <= len(edge_list)

@@ -1,7 +1,7 @@
 """Tests for tree operation functions."""
 import pytest
 from ete3 import Tree
-from fusang import get_modify_tree, transform_str, tree_from_quartet
+from fusang import FusangTreeBuilder, transform_str, tree_from_quartet
 
 
 class TestGetModifyTree:
@@ -12,7 +12,7 @@ class TestGetModifyTree:
         tree = tree_from_quartet('ABCD')
         root = tree.get_tree_root()
         
-        modified = get_modify_tree(tree, root.name, root.name, 'NEW_NODE')
+        modified = FusangTreeBuilder.get_modify_tree(tree, root.name, root.name, 'NEW_NODE')
         
         # Should add new node as child
         leaves = [leaf.name for leaf in modified.get_leaves()]
@@ -24,7 +24,7 @@ class TestGetModifyTree:
         root = tree.get_tree_root()
         child = root.children[0]
         
-        modified = get_modify_tree(tree, root.name, child.name, 'NEW_NODE')
+        modified = FusangTreeBuilder.get_modify_tree(tree, root.name, child.name, 'NEW_NODE')
         
         # Should have new node in tree
         leaves = [leaf.name for leaf in modified.get_leaves()]

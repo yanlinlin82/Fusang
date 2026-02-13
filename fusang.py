@@ -29,6 +29,7 @@ from ete3 import Tree, PhyloTree
 _parser = argparse.ArgumentParser('get_msa_dir', add_help=False)
 _parser.add_argument('-q', '--quiet', action='store_true', help='Suppress warning messages')
 _parser.add_argument('-v', '--verbose', action='store_true', help='Show verbose output including stderr messages')
+_parser.add_argument('-c', '--cpu', action='store_true', help='Force CPU-only execution (disable GPU/DCU acceleration)')
 _early_args, _ = _parser.parse_known_args()
 
 # Constants
@@ -117,6 +118,17 @@ class StderrRedirector:
 
         return False  # Don't suppress exceptions
 
+
+# Set hardware-related environment variables before TensorFlow import
+def _apply_cpu_only_setting(cpu_only):
+    if not cpu_only:
+        return
+    os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
+    os.environ['HIP_VISIBLE_DEVICES'] = '-1'
+    os.environ['ROCR_VISIBLE_DEVICES'] = '-1'
+
+
+_apply_cpu_only_setting(_early_args.cpu)
 
 # Set TensorFlow and NumPy warning levels based on verbosity (before TensorFlow import)
 os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
@@ -3136,6 +3148,11 @@ def _add_verbosity_args(parser):
     parser.add_argument("-v", "--verbose", action="store_true", help="Show verbose output including stderr messages")
 
 
+def _add_hardware_args(parser):
+    """Add hardware selection arguments to a parser."""
+    parser.add_argument("-c", "--cpu", action="store_true", help="Force CPU-only execution (disable GPU/DCU acceleration)")
+
+
 def _extract_inference_args(args):
     """Extract inference parameters from args namespace."""
     msa_file = getattr(args, 'msa_file', None) or getattr(args, 'input', None)
@@ -3173,6 +3190,7 @@ For detailed help on a subcommand, use: fusang <subcommand> --help
 
     # Global arguments
     _add_verbosity_args(parser)
+    _add_hardware_args(parser)
 
     # Always create subparsers to show them in help
     subparsers = parser.add_subparsers(dest='mode', help='Operation mode', metavar='{infer,simulate,train,evaluate}')
@@ -3192,6 +3210,7 @@ def add_infer_parser(subparsers):
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
     _add_verbosity_args(infer_parser)
+    _add_hardware_args(infer_parser)
     _add_inference_args(infer_parser)
 
 
@@ -3206,6 +3225,7 @@ def add_simulate_parser(subparsers):
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
     _add_verbosity_args(sim_parser)
+    _add_hardware_args(sim_parser)
     sim_parser.add_argument("-o", "--output", dest="simulation_dir", type=str, required=True, help="Path to simulation output directory")
     sim_parser.add_argument("-n", "--num_of_topology", type=int, required=True, help="Number of MSAs to simulate")
     sim_parser.add_argument("-t", "--taxa_num", type=int, required=True, help="Number of taxa in final tree")
@@ -3236,6 +3256,7 @@ def add_train_parser(subparsers):
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
     _add_verbosity_args(train_parser)
+    _add_hardware_args(train_parser)
     train_parser.add_argument("-d", "--data_dir", type=str, required=True, help="Data directory (numpy_data or simulation output dir). Automatically uses data_dir/seq and data_dir/label, or data_dir/numpy_data/seq and data_dir/numpy_data/label")
     train_parser.add_argument("-w", "--window_size", type=int, choices=[240, 1200], default=240, help="Window size for model (default: 240)")
     train_parser.add_argument("-e", "--epochs", type=int, default=100, help="Number of training epochs (default: 100)")
@@ -3263,6 +3284,7 @@ def add_evaluate_parser(subparsers):
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
     _add_verbosity_args(eval_parser)
+    _add_hardware_args(eval_parser)
     eval_parser.add_argument("-m", "--model", dest="model_path", type=str, required=True, help="Path to model weights (.h5)")
     eval_parser.add_argument("-d", "--data_dir", type=str, required=True, help="Data directory (numpy_data or simulation output dir). Automatically uses data_dir/seq and data_dir/label, or data_dir/numpy_data/seq and data_dir/numpy_data/label")
     eval_parser.add_argument("-o", "--output", dest="output_dir", type=str, default=None, help="Directory to save evaluation results (default: do not save)")
@@ -3388,6 +3410,7 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
     verbose = check_args_verbose(args, parser)
+    _apply_cpu_only_setting(args.cpu)
     check_args_mode_and_data_dir(args, parser)
 
     # Use 'with' statement to ensure stderr is properly restored

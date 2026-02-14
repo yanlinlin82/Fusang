@@ -1,0 +1,7 @@
+biopython
+ete3
+numpy
+pandas
+scikit-learn
+scipy
+pytest

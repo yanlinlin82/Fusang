@@ -45,18 +45,35 @@ mkdir -pv ${APP_DIR}/logs/
 mkdir -pv ${APP_DIR}/results/${NAME}/
 
 for x in {10..50..10}; do
-    DATE=$(date +"%Y-%m-%d_%H-%M-%S")
-    if [ ! -e "${APP_DIR}/results/${NAME}/${NAME}.${x}.tree" ]; then
+    if [ ! -e "${APP_DIR}/results/${NAME}/${NAME}.${x}.dcu.tree" ]; then
+        echo "Running Fusang with DCU for ${NAME}.${x}..."
+        DATE=$(date +"%Y-%m-%d_%H-%M-%S")
         (
             echo "Start at $(date)"
             time python ${APP_DIR}/fusang.py \
                 infer \
                 --input ${APP_DIR}/data/${NAME}/${NAME}.${x}.aligned.fasta \
-                --output ${APP_DIR}/results/${NAME}/${NAME}.${x}.tree
+                --output ${APP_DIR}/results/${NAME}/${NAME}.${x}.dcu.tree
             echo "End at $(date)"
         ) \
-            > ${APP_DIR}/logs/${DATE}_${NAME}.${x}.log \
-            2> ${APP_DIR}/logs/${DATE}_${NAME}.${x}.err
+            > ${APP_DIR}/logs/${DATE}_${NAME}.${x}.dcu.log \
+            2> ${APP_DIR}/logs/${DATE}_${NAME}.${x}.dcu.err
+    fi
+
+    if [ ! -e "${APP_DIR}/results/${NAME}/${NAME}.${x}.cpu.tree" ]; then
+        echo "Running Fusang with CPU for ${NAME}.${x}..."
+        DATE=$(date +"%Y-%m-%d_%H-%M-%S")
+        (
+            echo "Start at $(date)"
+            time python ${APP_DIR}/fusang.py \
+                infer \
+                --cpu \
+                --input ${APP_DIR}/data/${NAME}/${NAME}.${x}.aligned.fasta \
+                --output ${APP_DIR}/results/${NAME}/${NAME}.${x}.cpu.tree
+            echo "End at $(date)"
+        ) \
+            > ${APP_DIR}/logs/${DATE}_${NAME}.${x}.cpu.log \
+            2> ${APP_DIR}/logs/${DATE}_${NAME}.${x}.cpu.err
     fi
 done
 

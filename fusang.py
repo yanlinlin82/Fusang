@@ -671,7 +671,7 @@ class FusangTreeBuilder:
                 optim_tree_beam.append(crt_tree)
                 current_tree_score_beam.append(ele['tree_score'])
 
-        return optim_tree_beam[0].write()
+        return optim_tree_beam[0].write(parser=9)
 
 
 def gen_phylogenetic_tree(current_quartets, beam_size, taxa_num, leave_node_comb_name,

@@ -1,7 +1,7 @@
 """Tests for masking operations."""
 import numpy as np
 import pytest
-from ete3 import Tree
+from ete4 import Tree
 from fusang import (
     FusangTreeBuilder,
     MIN_TAXA_FOR_MASKING,
@@ -72,7 +72,9 @@ class TestMaskEdge:
         
         # Get actual edge names from tree
         edge_list = []
-        for node in tree.iter_descendants():
+        for node in tree.traverse():
+            if node is tree:
+                continue
             if node.up and node.up.name and node.name:
                 edge_list.append((node.up.name, node.name))
         
@@ -91,7 +93,9 @@ class TestMaskEdge:
         
         # Get actual edge names from tree
         edge_list = []
-        for node in tree.iter_descendants():
+        for node in tree.traverse():
+            if node is tree:
+                continue
             if node.up and node.up.name and node.name:
                 edge_list.append((node.up.name, node.name))
         

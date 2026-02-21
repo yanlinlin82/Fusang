@@ -80,11 +80,13 @@ class TestTreeFromQuartet:
         tree = tree_from_quartet(quartet)
         
         # Check that tree has correct structure
-        leaves = [leaf.name for leaf in tree.get_leaves()]
+        leaves = [leaf.name for leaf in tree.leaves()]
         assert set(leaves) == {'A', 'B', 'C', 'D'}
         
         # Check that all distances are 0
-        for node in tree.iter_descendants():
+        for node in tree.traverse():
+            if node is tree:
+                continue
             assert node.dist == 0
 
     def test_tree_structure(self):
@@ -96,6 +98,6 @@ class TestTreeFromQuartet:
         assert tree.name == 'internal_node_0'
         
         # Should have 4 leaves
-        leaves = tree.get_leaves()
+        leaves = list(tree.leaves())
         assert len(leaves) == 4
 

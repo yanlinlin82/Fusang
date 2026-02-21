@@ -23,7 +23,7 @@ import pandas as pd
 import scipy
 import scipy.stats
 from Bio import AlignIO
-from ete3 import Tree, PhyloTree
+from ete4 import Tree, PhyloTree
 
 # Parse arguments early to set logging level before TensorFlow import
 _parser = argparse.ArgumentParser('get_msa_dir', add_help=False)
@@ -226,7 +226,9 @@ def tree_from_quartet(quartet):
     right = root.add_child(name="internal_node_2")
     right.add_child(name=quartet[2])
     right.add_child(name=quartet[3])
-    for desc in root.iter_descendants():
+    for desc in root.traverse():
+        if desc is root:
+            continue
         desc.dist = 0
     return root
 
@@ -275,9 +277,9 @@ class FusangTreeBuilder:
         if edge_0 != edge_1:
             new_node = Tree()
             new_node.add_child(name=new_add_node_name)
-            detached_node = modify_tree & edge_1
+            detached_node = modify_tree[edge_1]
             detached_node.detach()
-            inserted_node = modify_tree & edge_0
+            inserted_node = modify_tree[edge_0]
             inserted_node.add_child(new_node)
             new_node.add_child(detached_node)
         else:
@@ -293,7 +295,7 @@ class FusangTreeBuilder:
             dists: NxN numpy array of distances (number of edges)
             leaf_names: list of leaf names corresponding to indices
         """
-        leaves = [node for node in tree.get_leaves()]
+        leaves = list(tree.leaves())
         leaf_names = [l.name for l in leaves]
         n_leaves = len(leaves)
         leaf_to_idx = {l.name: i for i, l in enumerate(leaves)}
@@ -327,7 +329,7 @@ class FusangTreeBuilder:
                 idx += 1
                 d = visited[curr]
 
-                if curr.is_leaf() and curr != start_node:
+                if curr.is_leaf and curr != start_node:
                     if curr.name in leaf_to_idx:
                         j = leaf_to_idx[curr.name]
                         dists[i, j] = d
@@ -415,7 +417,7 @@ class FusangTreeBuilder:
         tmp_tree_score = FusangTreeBuilder.fast_judge_tree_score(base_dists, new_node_dists, leaf_names, current_leave_node_name, current_quartets, dic_for_leave_node_comb_name)
 
         modify_tree = FusangTreeBuilder.get_modify_tree(tmp_tree, edge_0, edge_1, current_leave_node_name)
-        modify_tree.resolve_polytomy(recursive=True)
+        modify_tree.resolve_polytomy(descendants=True)
         modify_tree.unroot()
 
         dic = {}
@@ -547,11 +549,13 @@ class FusangTreeBuilder:
                 new_node_dists_list = []
 
                 # Collect all edges and compute X-distances
-                for node in optim_tree.iter_descendants():
+                for node in optim_tree.traverse():
+                    if node is optim_tree:
+                        continue
                     if not node.up: continue
                     edge_0 = node.up.name
                     edge_1 = node.name
-                    if edge_0 == '' or edge_1 == '':
+                    if not edge_0 or not edge_1:
                         continue
 
                     # BFS into subtree (node side)
@@ -562,7 +566,7 @@ class FusangTreeBuilder:
                     while idx < len(queue):
                         curr, d = queue[idx]
                         idx += 1
-                        if curr.is_leaf() and curr.name in leaf_name_to_idx:
+                        if curr.is_leaf and curr.name in leaf_name_to_idx:
                             dists_x[leaf_name_to_idx[curr.name]] = d + 1
                         for nb in adj[curr]:
                             if nb not in visited:
@@ -575,7 +579,7 @@ class FusangTreeBuilder:
                     while idx < len(queue):
                         curr, d = queue[idx]
                         idx += 1
-                        if curr.is_leaf() and curr.name in leaf_name_to_idx:
+                        if curr.is_leaf and curr.name in leaf_name_to_idx:
                             dists_x[leaf_name_to_idx[curr.name]] = d + 1
                         for nb in adj[curr]:
                             if nb not in visited:
@@ -660,13 +664,13 @@ class FusangTreeBuilder:
             for ele in candidate_tree_beam:
                 crt_tree = ele['Tree'].copy("newick")
                 for node in crt_tree.traverse("preorder"):
-                    if node.name == '':
+                    if not node.name:
                         node.name = str(internal_node_name_pool[idx_for_internal_node_name_pool])
                         idx_for_internal_node_name_pool += 1
                 optim_tree_beam.append(crt_tree)
                 current_tree_score_beam.append(ele['tree_score'])
 
-        return optim_tree_beam[0].write(format=9)
+        return optim_tree_beam[0].write()
 
 
 def gen_phylogenetic_tree(current_quartets, beam_size, taxa_num, leave_node_comb_name,
@@ -975,7 +979,7 @@ def _get_extremes(tree):
     shortest_distance = float('+inf')
     nearest = None
     farthest = None
-    for node in tree.get_leaves():
+    for node in tree.leaves():
         distance = node.get_distance(tree)
         if distance > longest_distance:
             longest_distance = distance
@@ -991,11 +995,11 @@ def _find_lba_branches(tree):
     min_branch_ratio = float('+inf')
     leaves = []
     for node in tree.traverse('preorder'):
-        if node.is_leaf() or node.is_root():
+        if node.is_leaf or node.is_root:
             continue
         t = tree.copy('newick')
         t.set_outgroup(t & node.name)
-        if t.children[0].is_leaf() or t.children[1].is_leaf():
+        if t.children[0].is_leaf or t.children[1].is_leaf:
             continue
         (short1, long1), (sdis1, ldis1) = _get_extremes(t.children[0])
         if short1 is None or long1 is None:
@@ -1056,7 +1060,7 @@ def _gen_newick(args):
     ).rvs()
 
     for node in tree.traverse("preorder"):
-        if node.is_leaf():
+        if node.is_leaf:
             node.name = f"taxon{current_leaf_index:d}"
             node.dist = external_branch_model.rvs()
             current_leaf_index += 1
@@ -1065,7 +1069,7 @@ def _gen_newick(args):
             node.dist = internal_branch_model.rvs()
             current_internal_index += 1
 
-    total_tree_leaves = [ele.name for ele in tree.get_leaves()]
+    total_tree_leaves = [ele.name for ele in tree.leaves()]
 
     pairwise_divergence_list = []
     for i in range(0, len(total_tree_leaves) - 1):
@@ -1089,15 +1093,18 @@ def _gen_newick(args):
 
     if random.random() < lba_ratio:
         __, leaves = _find_lba_branches(tree)
-        if len(tree.get_leaves()) != 4:
-            leaves = random.sample(tree.get_leaves(), 4)
+        tree_leaves = list(tree.leaves())
+        if len(tree_leaves) != 4:
+            leaves = random.sample(tree_leaves, 4)
+        else:
+            leaves = tree_leaves
     else:
-        leaves = random.sample(tree.get_leaves(), taxa_num)
+        leaves = random.sample(list(tree.leaves()), taxa_num)
 
     tree.prune(leaves, preserve_branch_length=True)
     tree.unroot()
 
-    ans = tree.write(format=5)
+    ans = tree.write()
     match = re.findall(r'taxon\d+:', ans)
     idx = ['0']
     number_set = [i for i in range(1, taxa_num)]

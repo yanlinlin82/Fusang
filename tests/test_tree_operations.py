@@ -1,6 +1,6 @@
 """Tests for tree operation functions."""
 import pytest
-from ete3 import Tree
+from ete4 import Tree
 from fusang import FusangTreeBuilder, transform_str, tree_from_quartet
 
 
@@ -10,24 +10,24 @@ class TestGetModifyTree:
     def test_add_node_same_edge(self):
         """Test adding node when edge_0 == edge_1."""
         tree = tree_from_quartet('ABCD')
-        root = tree.get_tree_root()
+        root = tree
         
         modified = FusangTreeBuilder.get_modify_tree(tree, root.name, root.name, 'NEW_NODE')
         
         # Should add new node as child
-        leaves = [leaf.name for leaf in modified.get_leaves()]
+        leaves = [leaf.name for leaf in modified.leaves()]
         assert 'NEW_NODE' in leaves
 
     def test_add_node_different_edges(self):
         """Test adding node between different edges."""
         tree = tree_from_quartet('ABCD')
-        root = tree.get_tree_root()
+        root = tree
         child = root.children[0]
         
         modified = FusangTreeBuilder.get_modify_tree(tree, root.name, child.name, 'NEW_NODE')
         
         # Should have new node in tree
-        leaves = [leaf.name for leaf in modified.get_leaves()]
+        leaves = [leaf.name for leaf in modified.leaves()]
         assert 'NEW_NODE' in leaves
         assert len(leaves) == 5  # Original 4 + new node
 

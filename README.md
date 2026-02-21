@@ -77,6 +77,22 @@ uv run fusang.py infer -i ./example_msa/a.fas -o dl_output/your_prefix.txt
 
 This command runs phylogenetic reconstruction of your MSA file. The output is a phylogenetic tree in Newick format. If `-o/--output` is omitted, the tree is written to stdout.
 
+You can also use legacy shortcut forms (equivalent to `infer`):
+
+```sh
+# Equivalent to: uv run fusang.py infer -i in.fas
+uv run fusang.py in.fas
+
+# Equivalent to: uv run fusang.py infer -i in.fas -o out.tree
+uv run fusang.py in.fas out.tree
+
+# Read MSA from stdin
+cat in.fas | uv run fusang.py
+
+# Read MSA from stdin and write output file
+cat in.fas | uv run fusang.py out.tree
+```
+
 The required parameter:
 
 - `-i, --input` The path to the MSA file. For current version of Fusang, we support both FASTA and PHYLIP format of MSA. The example of current MSA format can be seen in the directory of `example_msa`.

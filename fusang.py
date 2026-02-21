@@ -11,6 +11,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import warnings
 from io import StringIO
 from itertools import combinations
@@ -3182,6 +3183,10 @@ Examples:
   # Infer phylogenetic tree (using subcommand):
   fusang infer -i input.fasta -o output.tree
 
+  # Infer phylogenetic tree (legacy shortcut):
+  fusang input.fasta [output.tree]
+  cat input.fasta | fusang [output.tree]
+
   # Generate simulation data:
   fusang simulate -o ./simulation -n 20 -t 5 ...
 
@@ -3404,6 +3409,56 @@ def run_evaluate_mode(args):
         logger.info(f"\nResults saved to: {output_dir}")
 
 
+def _rewrite_legacy_infer_argv(raw_argv):
+    """Rewrite legacy positional infer CLI usage into subcommand form.
+
+    Supported legacy forms:
+      fusang.py input.fas [output.tree]
+      cat input.fas | fusang.py [output.tree]
+
+    Returns:
+      tuple[list[str] | None, str | None]:
+        - rewritten argv list in subcommand style, or None if no rewrite
+        - temporary file path created for stdin input (must be cleaned up), or None
+    """
+    known_modes = {'infer', 'simulate', 'train', 'evaluate'}
+
+    if raw_argv and raw_argv[0] in known_modes:
+        return None, None
+
+    if any(arg.startswith('-') for arg in raw_argv):
+        return None, None
+
+    stdin_piped = not sys.stdin.isatty()
+
+    if stdin_piped:
+        if len(raw_argv) > 1:
+            return None, None
+
+        msa_content = sys.stdin.read().strip()
+        if not msa_content:
+            raise ValueError("No MSA content received from stdin.")
+
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.fas', delete=False, encoding='utf-8') as tmp_msa:
+            tmp_msa.write(msa_content)
+            if not msa_content.endswith('\n'):
+                tmp_msa.write('\n')
+            temp_file_path = tmp_msa.name
+
+        rewritten = ['infer', '-i', temp_file_path]
+        if len(raw_argv) == 1:
+            rewritten.extend(['-o', raw_argv[0]])
+        return rewritten, temp_file_path
+
+    if len(raw_argv) in (1, 2):
+        rewritten = ['infer', '-i', raw_argv[0]]
+        if len(raw_argv) == 2:
+            rewritten.extend(['-o', raw_argv[1]])
+        return rewritten, None
+
+    return None, None
+
+
 if __name__ == '__main__':
     parser, subparsers = init_parser()
     add_infer_parser(subparsers)
@@ -3411,24 +3466,40 @@ if __name__ == '__main__':
     add_train_parser(subparsers)
     add_evaluate_parser(subparsers)
 
+    temp_stdin_msa_file = None
+
+    try:
+        rewritten_argv, temp_stdin_msa_file = _rewrite_legacy_infer_argv(sys.argv[1:])
+        if rewritten_argv is not None:
+            sys.argv = [sys.argv[0]] + rewritten_argv
+    except ValueError as e:
+        parser.error(str(e))
+
     if len(sys.argv) == 1:
         parser.print_help()
         sys.exit(0)
 
-    args = parser.parse_args()
-    verbose = check_args_verbose(args, parser)
-    _apply_cpu_only_setting(args.cpu)
-    check_args_mode_and_data_dir(args, parser)
+    try:
+        args = parser.parse_args()
+        verbose = check_args_verbose(args, parser)
+        _apply_cpu_only_setting(args.cpu)
+        check_args_mode_and_data_dir(args, parser)
 
-    # Use 'with' statement to ensure stderr is properly restored
-    with _stderr_redirector:
-        if args.mode == 'infer':
-            run_infer_mode(args)
-        elif args.mode == 'simulate':
-            run_simulate_mode(args)
-        elif args.mode == 'train':
-            run_train_mode(args)
-        elif args.mode == 'evaluate':
-            run_evaluate_mode(args)
-        else:
-            parser.error("Unknown mode. Use --help for available subcommands.")
+        # Use 'with' statement to ensure stderr is properly restored
+        with _stderr_redirector:
+            if args.mode == 'infer':
+                run_infer_mode(args)
+            elif args.mode == 'simulate':
+                run_simulate_mode(args)
+            elif args.mode == 'train':
+                run_train_mode(args)
+            elif args.mode == 'evaluate':
+                run_evaluate_mode(args)
+            else:
+                parser.error("Unknown mode. Use --help for available subcommands.")
+    finally:
+        if temp_stdin_msa_file is not None:
+            try:
+                os.remove(temp_stdin_msa_file)
+            except OSError:
+                pass
